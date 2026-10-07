@@ -1,5 +1,6 @@
 # Frontend Dockerfile
-FROM node:20-alpine
+# Build stage
+FROM node:20-alpine AS build
 
 WORKDIR /app
 
@@ -13,10 +14,12 @@ COPY . .
 # Build the app
 RUN npm run build
 
-# Install serve globally
-RUN npm install -g serve
+# Serve stage: nginx serves the static build and proxies /api to the gateway
+FROM nginx:alpine
+
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/build /usr/share/nginx/html
 
 EXPOSE 3000
 
-# Use serve to host the static files
-CMD ["serve", "-s", "build", "-l", "3000", "--single"]
+CMD ["nginx", "-g", "daemon off;"]
