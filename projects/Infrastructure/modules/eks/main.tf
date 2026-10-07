@@ -156,3 +156,40 @@ resource "aws_eks_addon" "ebs_csi" {
     aws_iam_role_policy_attachment.ebs_csi_irsa_policy
   ]
 }
+
+# Fluent Bit -> CloudWatch Logs via EKS Pod Identity
+
+resource "aws_eks_addon" "pod_identity_agent" {
+  cluster_name = aws_eks_cluster.eks.name
+  addon_name   = "eks-pod-identity-agent"
+}
+
+data "aws_iam_policy_document" "fluent_bit_assume_role" {
+  statement {
+    actions = ["sts:AssumeRole", "sts:TagSession"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "fluent_bit" {
+  name               = "${var.cluster_name}-fluent-bit"
+  assume_role_policy = data.aws_iam_policy_document.fluent_bit_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "fluent_bit_cloudwatch" {
+  role       = aws_iam_role.fluent_bit.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+resource "aws_eks_pod_identity_association" "fluent_bit" {
+  cluster_name    = aws_eks_cluster.eks.name
+  namespace       = "amazon-cloudwatch"
+  service_account = "aws-for-fluent-bit"
+  role_arn        = aws_iam_role.fluent_bit.arn
+
+  depends_on = [aws_eks_addon.pod_identity_agent]
+}

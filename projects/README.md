@@ -532,10 +532,11 @@ helm repo update
 helm upgrade --install aws-for-fluent-bit aws/aws-for-fluent-bit \
   --namespace amazon-cloudwatch \
   --create-namespace \
-  --set cloudWatch.enabled=true \
-  --set cloudWatch.region=us-east-1 \
-  --set cloudWatch.logGroupName=/eks/boutique/pods \
-  --set cloudWatch.logStreamPrefix=from-fluent-bit- \
+  --set cloudWatch.enabled=false \
+  --set cloudWatchLogs.enabled=true \
+  --set cloudWatchLogs.region=us-east-1 \
+  --set cloudWatchLogs.logGroupName=/eks/boutique/pods \
+  --set cloudWatchLogs.logStreamPrefix=from-fluent-bit- \
   --set firehose.enabled=false \
   --set kinesis.enabled=false \
   --set elasticsearch.enabled=false
@@ -546,7 +547,9 @@ Verify:
 kubectl get pods -n amazon-cloudwatch
 ```
 
-Logs appear in **CloudWatch → Log groups → /eks/boutique/pods**.
+Logs appear in **CloudWatch → Log groups → /eks/boutique/pods** (us-east-1).
+
+Fluent Bit gets AWS credentials through EKS Pod Identity (role `eks-cluster-fluent-bit`, defined in `Infrastructure/modules/eks/main.tf`), so run `terraform apply` before installing the chart. Use the `cloudWatchLogs` output as above: the legacy `cloudWatch` output can't read Pod Identity credentials and fails with `invalid endpoint host "169.254.170.23"`.
 
 ---
 
