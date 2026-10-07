@@ -1,5 +1,6 @@
 import boto3
 import json
+import os
 import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta
@@ -7,7 +8,8 @@ from datetime import datetime, timedelta
 DEFAULT_CLUSTER = "eks-cluster"
 DEFAULT_NAMESPACE = "boutique"
 REGION = "us-east-1"
-PROMETHEUS_URL = "http://<YOUR_PROMETHEUS_ELB_URL>:9090"
+# Set as the Lambda environment variable PROMETHEUS_URL, e.g. http://<elb-hostname>:9090
+PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://<YOUR_PROMETHEUS_ELB_URL>:9090")
 
 def prometheus_query(query):
     """Run an instant PromQL query and return the result."""

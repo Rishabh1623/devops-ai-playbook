@@ -1,6 +1,6 @@
 """
 AIOps Assistant — Streamlit Chat UI
-Connects to AWS Bedrock Agent for root cause analysis.
+Runs the Kira agent loop (agent.py): Claude on Bedrock calling the aiops Lambdas as tools.
 
 Setup:
     1. pip install -r requirements.txt
@@ -12,20 +12,19 @@ Setup:
 import streamlit as st
 import boto3
 import uuid
-import json
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from .env file (before agent reads AWS_REGION / BEDROCK_MODEL_ID)
 load_dotenv()
+
+from agent import KiraAgent, MODEL_ID  # noqa: E402
 
 # --- Config from environment ---
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_SESSION_TOKEN = os.getenv("AWS_SESSION_TOKEN")
-AWS_REGION = os.getenv("AWS_REGION", "eu-north-1")
-AGENT_ID = os.getenv("BEDROCK_AGENT_ID")
-AGENT_ALIAS_ID = os.getenv("BEDROCK_AGENT_ALIAS_ID")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 
 
 # --- Page Config ---
@@ -154,52 +153,42 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# --- Validate Config ---
-# Access keys optional: boto3 uses ~/.aws/credentials, SSO, env, or IAM role if unset.
-config_ok = bool(AGENT_ID and AGENT_ALIAS_ID)
-
-
 # --- Initialize Session State ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
+if "converse_history" not in st.session_state:
+    st.session_state.converse_history = []  # Converse API messages incl. tool calls
 
 
-# --- Bedrock Agent Client ---
+# --- Kira Agent ---
+# Access keys optional: boto3 uses ~/.aws/credentials, SSO, env, or IAM role if unset.
 @st.cache_resource
-def get_bedrock_client():
-    kwargs = {"service_name": "bedrock-agent-runtime", "region_name": AWS_REGION}
+def get_agent():
+    kwargs = {"region_name": AWS_REGION}
     if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
         kwargs["aws_access_key_id"] = AWS_ACCESS_KEY_ID
         kwargs["aws_secret_access_key"] = AWS_SECRET_ACCESS_KEY
         if AWS_SESSION_TOKEN:
             kwargs["aws_session_token"] = AWS_SESSION_TOKEN
-    return boto3.client(**kwargs)
+    return KiraAgent(boto3.Session(**kwargs))
 
 
-def invoke_agent(prompt: str) -> str:
-    """Send a message to the Bedrock Agent and get the response."""
-    client = get_bedrock_client()
+def invoke_agent(prompt: str, status) -> str:
+    """Run one turn of the Kira agent loop, logging each tool call to `status`."""
+    history = st.session_state.converse_history
+    turn_start = len(history)
+    history.append({"role": "user", "content": [{"text": prompt}]})
+
+    def on_tool_call(name, tool_input):
+        args = ", ".join(f"{k}={v}" for k, v in tool_input.items())
+        status.write(f"🔧 `{name}({args})`")
 
     try:
-        response = client.invoke_agent(
-            agentId=AGENT_ID,
-            agentAliasId=AGENT_ALIAS_ID,
-            sessionId=st.session_state.session_id,
-            inputText=prompt,
-        )
-
-        full_response = ""
-        for event in response["completion"]:
-            if "chunk" in event:
-                chunk = event["chunk"]
-                if "bytes" in chunk:
-                    full_response += chunk["bytes"].decode("utf-8")
-
-        return full_response
-
+        return get_agent().chat(history, on_tool_call=on_tool_call)
     except Exception as e:
+        del history[turn_start:]  # drop the partial turn so the next one starts clean
         return f"⚠️ Error: {str(e)}"
 
 
@@ -212,27 +201,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# --- Config Error ---
-if not config_ok:
-    st.markdown(f"""
-    <div class="status-bar">
-        <div class="status-dot-error"></div>
-        <span style="color: #ef4444;">NOT CONFIGURED</span>
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.error("Missing Bedrock agent settings. Create a `.env` file with at least:")
-    st.code("""AWS_REGION=us-east-1
-BEDROCK_AGENT_ID=your_agent_id
-BEDROCK_AGENT_ALIAS_ID=TSTALIASID
-
-# Optional (omit to use AWS CLI profile / SSO / role):
-# AWS_ACCESS_KEY_ID=...
-# AWS_SECRET_ACCESS_KEY=...
-# AWS_SESSION_TOKEN=...  # only for temporary credentials""", language="bash")
-    st.stop()
-
-
 # --- Status Bar ---
 st.markdown(f"""
 <div class="status-bar">
@@ -243,7 +211,7 @@ st.markdown(f"""
     <span style="color: #2a3040;">|</span>
     <span style="color: #5a6270;">Region: {AWS_REGION}</span>
     <span style="color: #2a3040;">|</span>
-    <span style="color: #5a6270;">Agent: {AGENT_ID}</span>
+    <span style="color: #5a6270;">Model: {MODEL_ID}</span>
 </div>
 """, unsafe_allow_html=True)
 
@@ -289,8 +257,9 @@ if prompt:
 
     # Get agent response
     with st.chat_message("assistant"):
-        with st.spinner("🔍 Kira is investigating..."):
-            response = invoke_agent(prompt)
+        with st.status("🔍 Kira is investigating...", expanded=True) as status:
+            response = invoke_agent(prompt, status)
+            status.update(label="✅ Investigation complete", state="complete", expanded=False)
         st.markdown(response)
 
     st.session_state.messages.append({"role": "assistant", "content": response})
@@ -308,8 +277,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**Tools Available:**")
     st.markdown("- 📋 `fetch_logs` — CloudWatch Logs")
-    st.markdown("- 📊 `fetch_metrics` — CloudWatch Metrics")
-    st.markdown("- 🏥 `fetch_service_health` — ECS/RDS/ALB")
+    st.markdown("- 📊 `fetch_metrics` — Prometheus pod metrics")
+    st.markdown("- 🏥 `fetch_service_health` — EKS cluster & pods")
 
     st.markdown("---")
     st.markdown("**Sample Questions:**")
@@ -325,5 +294,6 @@ with st.sidebar:
     st.markdown("---")
     if st.button("🔄 New Session"):
         st.session_state.messages = []
+        st.session_state.converse_history = []
         st.session_state.session_id = str(uuid.uuid4())
         st.rerun()

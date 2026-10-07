@@ -1,6 +1,6 @@
 # AIOps Assistant — Kira
 
-An AI-powered SRE assistant built on AWS Bedrock Agent. Kira diagnoses production incidents by querying CloudWatch Logs, CloudWatch Metrics (via Prometheus), and EKS cluster health — then responds with root cause, evidence, and fix recommendations.
+An AI-powered SRE assistant built on Claude (Amazon Bedrock). Kira diagnoses production incidents by querying CloudWatch Logs, Prometheus metrics, and EKS cluster health — then responds with root cause, evidence, and fix recommendations.
 
 ---
 
@@ -10,18 +10,20 @@ An AI-powered SRE assistant built on AWS Bedrock Agent. Kira diagnoses productio
 Streamlit UI (app.py)
       │
       ▼
-Bedrock Agent (Kira)
-      │
+Kira agent loop (agent.py) ──► Claude on Bedrock (Converse API, tool use)
+      │  invokes the Lambda for each tool Claude asks for
       ├── fetch_logs         → CloudWatch Logs
       ├── fetch_metrics      → Prometheus (ELB endpoint)
       └── fetch_service_health → EKS cluster + node groups
 ```
 
+> **Why not a Bedrock Agent?** Bedrock Agents (classic) is in maintenance mode and new agent creation is blocked on accounts without prior usage. Kira now runs its own agent loop in `agent.py`: it sends the question and the 3 tool definitions (built from `schemas/*.json`) to Claude, invokes the matching Lambda whenever Claude requests a tool, and feeds the result back until Claude answers. The Lambdas receive the same event format a Bedrock Agent would send, so their code is unchanged.
+
 ---
 
 ## Prerequisites
 
-- AWS account with access to Bedrock (model access enabled for your chosen model)
+- AWS account with access to a Claude model on Bedrock (default: `us.anthropic.claude-sonnet-4-6`)
 - EKS cluster running with Prometheus exposed via a LoadBalancer service
 - AWS CLI configured (`aws configure`)
 - Python 3.10+
@@ -30,7 +32,7 @@ Bedrock Agent (Kira)
 
 ## Step 1: Set Up IAM Roles
 
-Run the provided script to create both required IAM roles:
+Run the provided script to create the Lambda execution role:
 
 ```bash
 chmod +x setup-iam.sh
@@ -42,7 +44,8 @@ This creates:
 | Role | Used By | Permissions |
 |------|---------|-------------|
 | `aiops-lambda-role` | All 3 Lambda functions | CloudWatch Logs read, EKS describe, Lambda basic execution |
-| `aiops-bedrock-agent-role` | Bedrock Agent | Invoke the 3 Lambda functions, invoke Bedrock models |
+
+The AWS identity that runs `app.py` (your CLI user/role) separately needs `bedrock:InvokeModel` on the Claude inference profile and `lambda:InvokeFunction` on the 3 `aiops-*` functions.
 
 ---
 
@@ -60,18 +63,16 @@ Runtime: **Python 3.12** | Timeout: **30 seconds**
 
 ---
 
-## Step 3: Update the Prometheus URL
+## Step 3: Set the Prometheus URL
 
-Both `fetch_metrics` and `fetch_health` lambdas query Prometheus directly. Update the `PROMETHEUS_URL` placeholder in each file before uploading the code.
+Both `fetch_metrics` and `fetch_health` lambdas query Prometheus directly. They read its address from the `PROMETHEUS_URL` environment variable, so the URL stays out of git. After creating the two functions, set it on each (or in the console: **Configuration → Environment variables**):
 
-In `lambda/fetch_metrics/lambda_function.py`:
-```python
-PROMETHEUS_URL = "http://<YOUR_PROMETHEUS_ELB_URL>:9090"
-```
-
-In `lambda/fetch_health/lambda_function.py`:
-```python
-PROMETHEUS_URL = "http://<YOUR_PROMETHEUS_ELB_URL>:9090"
+```bash
+PROM=http://<YOUR_PROMETHEUS_ELB_URL>:9090
+for fn in aiops-fetch-metrics aiops-fetch-health; do
+  aws lambda update-function-configuration --function-name $fn \
+    --environment "Variables={PROMETHEUS_URL=$PROM}" --region us-east-1
+done
 ```
 
 To get the Prometheus ELB URL, expose Prometheus as a LoadBalancer service:
@@ -86,21 +87,14 @@ kubectl get svc kube-prometheus-stack-prometheus -n monitoring
 
 ---
 
-## Step 4: Deploy the Bedrock Agent
+## Step 4: Configure the Lambdas
 
-Run the deploy script. It will:
-- Verify the Lambda functions and IAM role exist
-- Set Lambda timeouts to 30s and add Bedrock invoke permissions
-- Create the Bedrock Agent (`aiops-assistant`) with the Kira system prompt
-- Attach all 3 action groups with their OpenAPI schemas
-- Prepare the agent
+Run the deploy script. It verifies the 3 Lambda functions exist and sets their timeout to 30s:
 
 ```bash
 chmod +x deploy.sh
 ./deploy.sh
 ```
-
-At the end, the script prints your **Agent ID** — keep it for the next step.
 
 ---
 
@@ -122,12 +116,11 @@ This writes 100 realistic log events (503 errors, OOM kills, connection pool exh
 cp .env.example .env
 ```
 
-Edit `.env` and fill in your values:
+Edit `.env` if you need to change anything (all values are optional):
 
 ```env
 AWS_REGION=us-east-1
-BEDROCK_AGENT_ID=<YOUR_AGENT_ID>
-BEDROCK_AGENT_ALIAS_ID=TSTALIASID
+BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-6
 
 # Optional — omit to use your AWS CLI profile / SSO / IAM role:
 # AWS_ACCESS_KEY_ID=<YOUR_ACCESS_KEY>
@@ -138,6 +131,7 @@ BEDROCK_AGENT_ALIAS_ID=TSTALIASID
 Install dependencies and start the UI:
 
 ```bash
+python3 -m venv venv && . venv/bin/activate
 pip install -r requirements.txt
 streamlit run app.py
 ```
@@ -151,8 +145,9 @@ Open **http://localhost:8501** in your browser.
 ```
 aiops-assistant/
 ├── app.py                  # Streamlit chat UI
-├── deploy.sh               # Bedrock Agent deployment script
-├── setup-iam.sh            # IAM roles and policies setup
+├── agent.py                # Kira agent loop (Claude + Lambda tools)
+├── deploy.sh               # Lambda checks / configuration
+├── setup-iam.sh            # Lambda IAM role and policies setup
 ├── requirements.txt        # Python dependencies
 ├── .env.example            # Environment variable template
 ├── lambda/
@@ -160,9 +155,9 @@ aiops-assistant/
 │   ├── fetch_metrics/      # Prometheus metrics query
 │   └── fetch_health/       # EKS cluster health check
 ├── schemas/
-│   ├── fetch_logs.json     # OpenAPI schema for fetch_logs
-│   ├── fetch_metrics.json  # OpenAPI schema for fetch_metrics
-│   └── fetch_health.json   # OpenAPI schema for fetch_health
+│   ├── fetch_logs.json     # Tool definition for fetch_logs (OpenAPI)
+│   ├── fetch_metrics.json  # Tool definition for fetch_metrics (OpenAPI)
+│   └── fetch_health.json   # Tool definition for fetch_health (OpenAPI)
 └── scripts/
     └── generate_sample_data.py  # Seed CloudWatch with test errors
 ```
@@ -181,25 +176,20 @@ aiops-assistant/
 
 ## Potential Issues
 
-### Bedrock model access not enabled
-The deploy script will fail at agent creation if model access hasn't been requested. Go to **AWS Console → Bedrock → Model access** and enable access for the model used in `deploy.sh` before running the script.
+### Claude model not available
+If Kira replies with `AccessDeniedException ... is not available for this account`, your account can't use that model even if it appears in `aws bedrock list-foundation-models`. Test a model directly and set a working one as `BEDROCK_MODEL_ID` in `.env`:
+
+```bash
+aws bedrock-runtime converse --region us-east-1 \
+  --model-id us.anthropic.claude-sonnet-4-6 \
+  --messages '[{"role":"user","content":[{"text":"hi"}]}]' \
+  --inference-config '{"maxTokens":10}'
+```
 
 ### Prometheus URL unreachable from Lambda
 `fetch_metrics` and `fetch_health` make outbound HTTP calls to the Prometheus ELB. If Lambda is deployed inside a VPC without a NAT gateway or internet gateway route, these calls will time out. Either:
 - Keep Lambda outside a VPC (default), or
 - Ensure the VPC has a route to the internet and the Prometheus ELB security group allows inbound on port 9090.
-
-### Agent stuck in PREPARING state
-After running `deploy.sh`, the agent status shows `PREPARING`. This is normal and takes 30–60 seconds. If it stays in this state, check the Bedrock console for validation errors — usually caused by a malformed OpenAPI schema or a Lambda ARN that doesn't exist.
-
-### Streamlit shows "NOT CONFIGURED"
-The app requires `BEDROCK_AGENT_ID` and `BEDROCK_AGENT_ALIAS_ID` to be set in `.env`. If you started Streamlit before populating `.env`, stop it and restart — `load_dotenv()` only reads the file at startup.
-
-```bash
-# Stop and restart
-pkill -f "streamlit run app.py"
-streamlit run app.py
-```
 
 ### fetch_logs returns no results
 The default log group is `/eks/boutique/pods`. This group is only created after Fluent Bit starts shipping logs. Make sure `aws-for-fluent-bit` is running:

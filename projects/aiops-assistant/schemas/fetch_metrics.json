@@ -1,82 +1,51 @@
 {
   "openapi": "3.0.0",
   "info": {
-    "title": "CloudWatch Metrics Fetcher",
+    "title": "Prometheus Metrics Fetcher",
     "version": "1.0.0",
-    "description": "Fetches performance metrics from AWS CloudWatch"
+    "description": "Fetches Kubernetes pod and deployment metrics from the cluster's Prometheus"
   },
   "paths": {
     "/fetch_cloudwatch_metrics": {
       "get": {
-        "summary": "Fetch performance metrics from CloudWatch",
-        "description": "Retrieves metric data points from CloudWatch Metrics. Use when checking CPU usage, memory, error rates, latency, database connections, request counts, or any numerical performance data.",
+        "summary": "Fetch pod and deployment metrics from Prometheus",
+        "description": "Queries Prometheus for per-pod metrics in an EKS namespace over a time window and returns current, average and max values per pod (top 10 series). Use when checking CPU usage, memory usage, pod restarts / crash loops, or unavailable replicas.",
         "operationId": "fetch_cloudwatch_metrics",
         "parameters": [
           {
             "name": "metric_name",
             "in": "query",
             "required": true,
-            "description": "The CloudWatch metric name. Common metrics: CPUUtilization, MemoryUtilization, DatabaseConnections, FreeStorageSpace, ReadLatency, WriteLatency, 5XXError, 4XXError, RequestCount, TargetResponseTime, HealthyHostCount, UnHealthyHostCount",
-            "schema": { "type": "string" }
+            "description": "One of: pod_cpu_utilization (CPU cores used per pod), pod_memory_utilization (working-set bytes per pod), pod_restarts (container restarts in the last hour), deployment_replicas_unavailable, deployment_replicas_available. Any other value is run as a raw PromQL query, where {namespace} is substituted.",
+            "schema": { "type": "string", "default": "pod_cpu_utilization" }
           },
           {
             "name": "namespace",
             "in": "query",
-            "required": true,
-            "description": "The AWS service namespace. Use: AWS/ECS for containers, AWS/RDS for databases, AWS/ApplicationELB for load balancers, AWS/EC2 for instances, AWS/Lambda for functions, Custom/Application for app-level metrics",
-            "schema": { "type": "string" }
+            "required": false,
+            "description": "Kubernetes namespace. Defaults to boutique (the microservices: frontend, gateway, auth, orders, order-service, product-service, user-service, boutique-postgres).",
+            "schema": { "type": "string", "default": "boutique" }
           },
           {
             "name": "hours_back",
             "in": "query",
             "required": false,
-            "description": "How many hours of data to retrieve.",
+            "description": "How many hours of data to retrieve (sampled every 5 minutes).",
             "schema": { "type": "string", "default": "1" }
-          },
-          {
-            "name": "period_minutes",
-            "in": "query",
-            "required": false,
-            "description": "Granularity of data points in minutes.",
-            "schema": { "type": "string", "default": "5" }
-          },
-          {
-            "name": "statistic",
-            "in": "query",
-            "required": false,
-            "description": "The statistic to retrieve.",
-            "schema": {
-              "type": "string",
-              "default": "Average",
-              "enum": ["Average", "Maximum", "Minimum", "Sum", "SampleCount"]
-            }
-          },
-          {
-            "name": "dimension_name",
-            "in": "query",
-            "required": false,
-            "description": "Dimension name to filter by. Examples: ClusterName, ServiceName, DBInstanceIdentifier, LoadBalancer",
-            "schema": { "type": "string" }
-          },
-          {
-            "name": "dimension_value",
-            "in": "query",
-            "required": false,
-            "description": "The value for the dimension filter.",
-            "schema": { "type": "string" }
           }
         ],
         "responses": {
           "200": {
-            "description": "Metric data points",
+            "description": "Per-pod metric summary",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "status": { "type": "string" },
-                    "summary": { "type": "object" },
-                    "datapoints": { "type": "array" }
+                    "metric": { "type": "string" },
+                    "ns": { "type": "string" },
+                    "data": { "type": "array" }
                   }
                 }
               }

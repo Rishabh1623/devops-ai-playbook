@@ -1,9 +1,11 @@
 import json
+import os
 import urllib.request
 import urllib.parse
 from datetime import datetime
 
-PROMETHEUS_URL = "http://<YOUR_PROMETHEUS_ELB_URL>:9090"
+# Set as the Lambda environment variable PROMETHEUS_URL, e.g. http://<elb-hostname>:9090
+PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://<YOUR_PROMETHEUS_ELB_URL>:9090")
 
 DEFAULT_NAMESPACE = "boutique"
 
