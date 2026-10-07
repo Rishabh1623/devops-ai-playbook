@@ -45,6 +45,6 @@ spec:
     app: order-service
   ports:
     - protocol: TCP
-      port: 3002
-      targetPort: 3002
+      port: 3004
+      targetPort: 3004
   type: ClusterIP
