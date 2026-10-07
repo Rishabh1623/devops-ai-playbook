@@ -75,7 +75,7 @@ services:
       - PRODUCTS_SERVICE_URL=http://product-service:3003
       - ORDER_SERVICE_URL=http://order-service:3004
       - ORDERS_SERVICE_URL=http://orders:3005
-      - USER_SERVICE_URL=http://user-service:3006
+      - USERS_SERVICE_URL=http://user-service:3006
     depends_on:
       postgres:
         condition: service_healthy
@@ -158,6 +158,7 @@ services:
       - NODE_ENV=development
       - PORT=3005
       - DATABASE_URL=postgresql://postgres:postgres123@postgres:5432/orders_db
+      - PRODUCTS_SERVICE_URL=http://product-service:3003
     depends_on:
       postgres:
         condition: service_healthy

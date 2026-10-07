@@ -4,11 +4,8 @@ module.exports = function (app) {
   app.use(
     '/api',
     createProxyMiddleware({
-      target: 'http://localhost:3003',
+      target: 'http://localhost:3001', // API gateway, same as nginx in Docker
       changeOrigin: true,
-      pathRewrite: {
-        '^/api': '', // remove /api prefix
-      },
     })
   );
 };

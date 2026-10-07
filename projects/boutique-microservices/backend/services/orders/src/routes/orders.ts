@@ -6,10 +6,22 @@ import { Order, CreateOrderRequest, Address, ServiceResponse } from '../types';
 const router = express.Router();
 const PRODUCTS_SERVICE_URL = process.env.PRODUCTS_SERVICE_URL || 'http://localhost:3003';
 
+// Demo mode - the auth service issues the user ID as the bearer token
+const getUserId = (req: express.Request): string | null => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+  if (token && token !== 'undefined') return token;
+  return (req.body?.userId as string) || (req.query.userId as string) || null;
+};
+
 router.post('/', async (req, res) => {
   try {
-    // Demo mode - use a fixed user ID or get from request
-    const { items, shippingAddress, userId = 'demo-user-id' } = req.body as CreateOrderRequest & { userId?: string };
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, error: 'Not logged in' });
+    }
+
+    const { items, shippingAddress } = req.body as CreateOrderRequest;
 
     let totalAmount = 0;
     const orderItems: any[] = [];
@@ -75,8 +87,10 @@ router.post('/', async (req, res) => {
 
 router.get('/my-orders', async (req, res) => {
   try {
-    // Demo mode - use a fixed user ID or get from query
-    const userId = req.query.userId as string || 'demo-user-id';
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, error: 'Not logged in' });
+    }
 
     const result = await query(`
       SELECT o.*,
