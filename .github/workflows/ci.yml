@@ -2,6 +2,9 @@ name: Boutique CI Pipeline
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - project-demo
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
