@@ -66,9 +66,11 @@ resource "helm_release" "monitoring" {
         }
       }
 
+      # Public so the aiops-assistant Lambdas (outside the VPC) can query it.
+      # No auth on Prometheus — switch back to ClusterIP when not demoing.
       prometheus = {
         service = {
-          type = "ClusterIP"
+          type = "LoadBalancer"
         }
       }
 
