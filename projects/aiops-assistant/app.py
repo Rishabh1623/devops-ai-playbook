@@ -11,6 +11,7 @@ Setup:
 
 import streamlit as st
 import boto3
+import hmac
 import uuid
 import os
 from dotenv import load_dotenv
@@ -25,6 +26,7 @@ AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_SESSION_TOKEN = os.getenv("AWS_SESSION_TOKEN")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+APP_PASSWORD = os.getenv("APP_PASSWORD")  # unset = no login (local dev)
 
 
 # --- Page Config ---
@@ -199,6 +201,17 @@ st.markdown("""
     <p>AIOps Assistant — Root Cause Analysis Engine</p>
 </div>
 """, unsafe_allow_html=True)
+
+
+# --- Password Gate ---
+if APP_PASSWORD and not st.session_state.get("authenticated"):
+    password = st.text_input("Password", type="password")
+    if password:
+        if hmac.compare_digest(password.encode(), APP_PASSWORD.encode()):
+            st.session_state.authenticated = True
+            st.rerun()
+        st.error("Incorrect password")
+    st.stop()
 
 
 # --- Status Bar ---

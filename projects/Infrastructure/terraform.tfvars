@@ -40,5 +40,6 @@ repositories = [
   "order-service",
   "orders",
   "product-service",
-  "user-service"
+  "user-service",
+  "aiops-assistant"
 ]

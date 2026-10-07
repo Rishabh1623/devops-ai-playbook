@@ -1,0 +1,73 @@
+# Kira (aiops-assistant) Streamlit UI.
+# AWS access via EKS Pod Identity (role eks-cluster-aiops-assistant, Terraform).
+# The kira-auth Secret (APP_PASSWORD) is created out-of-band, not stored in git:
+#   kubectl create secret generic kira-auth -n boutique --from-literal=APP_PASSWORD=<password>
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: aiops-assistant
+  namespace: boutique
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aiops-assistant
+  namespace: boutique
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aiops-assistant
+  template:
+    metadata:
+      labels:
+        app: aiops-assistant
+    spec:
+      serviceAccountName: aiops-assistant
+      containers:
+        - name: aiops-assistant
+          image: 955510722779.dkr.ecr.us-east-1.amazonaws.com/aiops-assistant:v1
+          ports:
+            - containerPort: 8501
+          env:
+            - name: AWS_REGION
+              value: us-east-1
+            - name: BEDROCK_MODEL_ID
+              value: us.anthropic.claude-sonnet-4-6
+            - name: APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: kira-auth
+                  key: APP_PASSWORD
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8501
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8501
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: aiops-assistant
+  namespace: boutique
+spec:
+  selector:
+    app: aiops-assistant
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8501
+  type: LoadBalancer

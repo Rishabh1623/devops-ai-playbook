@@ -24,6 +24,7 @@ jobs:
           - product-service
           - user-service
           - frontend
+          - aiops-assistant
 
     steps:
       - name: Checkout Code
@@ -46,6 +47,8 @@ jobs:
         run: |
           if [ "${{ matrix.service }}" == "frontend" ]; then
             BUILD_PATH="projects/boutique-microservices/frontend"
+          elif [ "${{ matrix.service }}" == "aiops-assistant" ]; then
+            BUILD_PATH="projects/aiops-assistant"
           else
             BUILD_PATH="projects/boutique-microservices/backend/services/${{ matrix.service }}"
           fi
@@ -87,6 +90,8 @@ jobs:
           done
 
           sed -i "s|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/frontend:.*|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/frontend:${NEW_TAG}|g" gitops/k8s/frontend/deployment.yml
+
+          sed -i "s|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/aiops-assistant:.*|${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/aiops-assistant:${NEW_TAG}|g" gitops/k8s/aiops-assistant/deployment.yml
 
       - name: Commit and push updated manifests
         run: |

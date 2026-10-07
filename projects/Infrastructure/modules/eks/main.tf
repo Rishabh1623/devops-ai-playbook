@@ -164,7 +164,7 @@ resource "aws_eks_addon" "pod_identity_agent" {
   addon_name   = "eks-pod-identity-agent"
 }
 
-data "aws_iam_policy_document" "fluent_bit_assume_role" {
+data "aws_iam_policy_document" "pod_identity_assume_role" {
   statement {
     actions = ["sts:AssumeRole", "sts:TagSession"]
 
@@ -177,7 +177,7 @@ data "aws_iam_policy_document" "fluent_bit_assume_role" {
 
 resource "aws_iam_role" "fluent_bit" {
   name               = "${var.cluster_name}-fluent-bit"
-  assume_role_policy = data.aws_iam_policy_document.fluent_bit_assume_role.json
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_assume_role.json
 }
 
 resource "aws_iam_role_policy_attachment" "fluent_bit_cloudwatch" {
@@ -190,6 +190,54 @@ resource "aws_eks_pod_identity_association" "fluent_bit" {
   namespace       = "amazon-cloudwatch"
   service_account = "aws-for-fluent-bit"
   role_arn        = aws_iam_role.fluent_bit.arn
+
+  depends_on = [aws_eks_addon.pod_identity_agent]
+}
+
+# aiops-assistant (Kira) -> Bedrock Claude + aiops Lambdas via EKS Pod Identity
+
+data "aws_caller_identity" "current" {}
+data "aws_region" "current" {}
+
+data "aws_iam_policy_document" "aiops_assistant" {
+  statement {
+    sid = "InvokeClaude"
+    actions = [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream",
+    ]
+    resources = [
+      "arn:aws:bedrock:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.*",
+      "arn:aws:bedrock:*::foundation-model/anthropic.*",
+    ]
+  }
+
+  statement {
+    sid     = "InvokeTools"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      for fn in ["aiops-fetch-logs", "aiops-fetch-metrics", "aiops-fetch-health"] :
+      "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${fn}"
+    ]
+  }
+}
+
+resource "aws_iam_role" "aiops_assistant" {
+  name               = "${var.cluster_name}-aiops-assistant"
+  assume_role_policy = data.aws_iam_policy_document.pod_identity_assume_role.json
+}
+
+resource "aws_iam_role_policy" "aiops_assistant" {
+  name   = "bedrock-and-tools"
+  role   = aws_iam_role.aiops_assistant.id
+  policy = data.aws_iam_policy_document.aiops_assistant.json
+}
+
+resource "aws_eks_pod_identity_association" "aiops_assistant" {
+  cluster_name    = aws_eks_cluster.eks.name
+  namespace       = "boutique"
+  service_account = "aiops-assistant"
+  role_arn        = aws_iam_role.aiops_assistant.arn
 
   depends_on = [aws_eks_addon.pod_identity_agent]
 }
