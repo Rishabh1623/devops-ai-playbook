@@ -100,6 +100,29 @@ let whereClause = 'WHERE 1=1';
   }
 });
 
+// Must be registered before '/:id', otherwise "categories" is treated as a product id
+router.get('/categories', async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT c.*, COUNT(p.id) as product_count
+      FROM categories c
+      LEFT JOIN products p ON p.category_id = c.id
+      GROUP BY c.id
+      ORDER BY c.name
+    `);
+
+    const response: ServiceResponse<any[]> = {
+      success: true,
+      data: result.rows
+    };
+
+    res.json(response);
+  } catch (error) {
+    console.error('Get categories error:', error);
+    res.status(500).json({ success: false, error: 'Failed to get categories' });
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -133,28 +156,6 @@ router.get('/:id', async (req, res) => {
   } catch (error) {
     console.error('Get product error:', error);
     res.status(500).json({ success: false, error: 'Failed to get product' });
-  }
-});
-
-router.get('/categories', async (req, res) => {
-  try {
-    const result = await query(`
-      SELECT c.*, COUNT(p.id) as product_count 
-      FROM categories c 
-      LEFT JOIN products p ON c.name = p.category 
-      GROUP BY c.id, c.name, c.description, c.image_url
-      ORDER BY c.name
-    `);
-
-    const response: ServiceResponse<any[]> = {
-      success: true,
-      data: result.rows
-    };
-
-    res.json(response);
-  } catch (error) {
-    console.error('Get categories error:', error);
-    res.status(500).json({ success: false, error: 'Failed to get categories' });
   }
 });
 
