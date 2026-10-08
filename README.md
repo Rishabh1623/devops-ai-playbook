@@ -1,10 +1,47 @@
-# DevOps + AIOps Series
+# DevOps + AIOps Series — build-along fork
 
-> A full end-to-end DevOps project with AIOps integration — so you can connect the dots between how AI is helping automate DevOps tasks today.
+> A full end-to-end DevOps project with AIOps integration, deployed and extended on AWS EKS.
+
+---
+
+## Credits
+
+This repository is a fork of **[vishakhasadhwani/devops-ai-playbook](https://github.com/vishakhasadhwani/devops-ai-playbook)**, the *DevOps + AIOps Series* created by **[Vishakha Sadhwani](https://github.com/vishakhasadhwani)** with contributions from **Anish Bhat K**.
+
+The series content, the boutique microservices application, the original Terraform, GitOps and CI setup, and the docs in `docs/` are their work. The sections from **Welcome** through **Bonus Challenge** are kept from the original series, in the original author's words.
+
+My work in this fork is listed under [What I changed](#what-i-changed).
+
+---
+
+## What I changed
+
+I followed the series, deployed it to my own AWS account, and fixed and extended it. All changes are on the `project-demo` branch:
+
+**Bug fixes**
+- Frontend calls routed through the API gateway; orders use the logged-in user (`806f470`)
+- Frontend served by nginx with an `/api` proxy to the gateway (`331a353`)
+- `order-service` exposed on its real port 3004 (`065c0d4`)
+- Manifests use real ECR image references; database restored on deploy (`3f7bcc4`)
+- Argo CD pointed at this repository with auto-sync (`51c143f`)
+- `product-service` `/categories` route made reachable and its query fixed (`7521aa0`)
+
+**Pipeline and platform**
+- CI runs on every push to `project-demo` and updates image tags for Argo CD (`0193700`)
+- Frontend exposed publicly through a LoadBalancer on port 80 (`a6ef1de`)
+- Pod logs shipped to CloudWatch with Fluent Bit, using an EKS Pod Identity role instead of the node role (`c663136`)
+
+**AIOps (Kira)**
+- Bedrock Agents (classic) is closed to new accounts, so Kira was rebuilt as its own agent loop: Claude on Bedrock (Converse API) calling the Lambdas as tools (`ff1abdc`)
+- `fetch_metrics` tool schema corrected to match the Prometheus-based Lambda (`ff1abdc`)
+- Kira containerised and deployed to EKS through GitOps and CI, with a password gate and a Pod Identity role scoped to Claude and the 3 Lambdas (`d97f71c`)
+- Prometheus exposed via a LoadBalancer so the Lambdas can query it (`ed9f816`). This is a known gap: it has no authentication and is tracked for removal
 
 ---
 
 ## Welcome
+
+> *From here through Bonus Challenge: original series text by Vishakha Sadhwani.*
 
 Hey everyone!
 
@@ -40,7 +77,7 @@ DevOps-Practice-Guide/
 │   ├── README.md                  # EKS deployment guide (Part 3)
 │   ├── boutique-microservices/    # The application (7 services)
 │   ├── Infrastructure/            # Terraform for AWS provisioning
-│   └── aiops-assistant/           # Bedrock Agent — Kira (Part 4)
+│   └── aiops-assistant/           # Kira — Claude on Bedrock + Lambda tools (Part 4)
 ├── gitops/
 │   ├── argo-cd.yml                # ArgoCD Application manifest
 │   ├── kustomization.yml          # Kustomize entry point
@@ -156,5 +193,5 @@ Once you implement the project:
 | GitOps | ArgoCD + Kustomize |
 | Monitoring | Prometheus + Grafana |
 | Log Forwarding | AWS Fluent Bit → CloudWatch |
-| AIOps | AWS Bedrock Agent (Kira) |
+| AIOps | Claude on AWS Bedrock (Converse API) + Lambda tools (Kira) |
 | AI Assistant | Claude Code + MCP Servers |
