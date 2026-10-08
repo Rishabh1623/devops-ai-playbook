@@ -70,8 +70,9 @@ module "argocd" {
 module "github_oidc" {
   source = "./modules/github-oidc"
 
-  github_repository   = "Rishabh1623/devops-ai-playbook"
-  github_branch       = "project-demo"
-  role_name           = "github-actions-ci"
-  ecr_repository_arns = module.ecr.repository_arns
+  # Repo uses immutable OIDC subjects (owner and repo IDs, not just names)
+  github_subject_prefix = "repo:Rishabh1623@183885132/devops-ai-playbook@1404909131"
+  github_branch         = "project-demo"
+  role_name             = "github-actions-ci"
+  ecr_repository_arns   = module.ecr.repository_arns
 }

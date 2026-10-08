@@ -1,5 +1,9 @@
-variable "github_repository" {
-  description = "GitHub repository allowed to assume the CI role, as owner/name"
+variable "github_subject_prefix" {
+  description = <<-EOT
+    OIDC sub claim prefix for the repository, e.g. "repo:owner/name", or with
+    immutable subjects enabled "repo:owner@<owner_id>/name@<repo_id>"
+    (see GET /repos/{owner}/{repo}/actions/oidc/customization/sub)
+  EOT
   type        = string
 }
 
