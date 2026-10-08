@@ -26,7 +26,7 @@ spec:
       serviceAccountName: aiops-assistant
       containers:
         - name: aiops-assistant
-          image: 955510722779.dkr.ecr.us-east-1.amazonaws.com/aiops-assistant:450076e150643fff8742bde881b29bb805f7423b
+          image: 955510722779.dkr.ecr.us-east-1.amazonaws.com/aiops-assistant:92deeca447087b0fcce2ece0ebd8e98e24fdbcbc
           ports:
             - containerPort: 8501
           env:
