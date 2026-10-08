@@ -86,3 +86,33 @@ resource "helm_release" "monitoring" {
     kubernetes_namespace_v1.monitoring
   ]
 }
+
+resource "kubernetes_namespace_v1" "external_secrets" {
+  metadata {
+    name = "external-secrets"
+  }
+}
+
+# Syncs the boutique DB credentials from AWS Secrets Manager into the
+# boutique-secrets Kubernetes Secret (see gitops/k8s/database/external-secret.yml)
+resource "helm_release" "external_secrets" {
+  name       = "external-secrets"
+  namespace  = kubernetes_namespace_v1.external_secrets.metadata[0].name
+  repository = "https://charts.external-secrets.io"
+  chart      = "external-secrets"
+  version    = "2.12.0"
+
+  create_namespace = false
+
+  values = [
+    yamlencode({
+      installCRDs = true
+      serviceAccount = {
+        name = "external-secrets"
+        annotations = {
+          "eks.amazonaws.com/role-arn" = var.external_secrets_role_arn
+        }
+      }
+    })
+  ]
+}

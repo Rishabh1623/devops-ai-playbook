@@ -241,3 +241,69 @@ resource "aws_eks_pod_identity_association" "aiops_assistant" {
 
   depends_on = [aws_eks_addon.pod_identity_agent]
 }
+
+# Boutique DB credentials in Secrets Manager, read by External Secrets Operator (IRSA)
+
+resource "random_password" "db" {
+  length  = 32
+  special = false # used inside postgresql:// connection URLs
+}
+
+resource "aws_secretsmanager_secret" "db" {
+  name                    = "boutique/db"
+  description             = "Postgres credentials for the boutique services"
+  recovery_window_in_days = 0 # allow immediate re-create after terraform destroy
+}
+
+resource "aws_secretsmanager_secret_version" "db" {
+  secret_id = aws_secretsmanager_secret.db.id
+  secret_string = jsonencode({
+    username = "postgres"
+    password = random_password.db.result
+  })
+}
+
+data "aws_iam_policy_document" "external_secrets_assume_role" {
+  statement {
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_eks_cluster.eks.identity[0].oidc[0].issuer, "https://", "")}:sub"
+      values   = ["system:serviceaccount:external-secrets:external-secrets"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${replace(aws_eks_cluster.eks.identity[0].oidc[0].issuer, "https://", "")}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "external_secrets" {
+  name               = "${var.cluster_name}-external-secrets-irsa"
+  assume_role_policy = data.aws_iam_policy_document.external_secrets_assume_role.json
+}
+
+data "aws_iam_policy_document" "external_secrets" {
+  statement {
+    sid = "ReadBoutiqueDbSecret"
+    actions = [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = [aws_secretsmanager_secret.db.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "external_secrets" {
+  name   = "read-boutique-db-secret"
+  role   = aws_iam_role.external_secrets.id
+  policy = data.aws_iam_policy_document.external_secrets.json
+}

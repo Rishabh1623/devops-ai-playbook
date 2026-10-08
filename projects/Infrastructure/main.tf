@@ -56,6 +56,8 @@ provider "helm" {
 module "argocd" {
   source = "./modules/argocd"
 
+  external_secrets_role_arn = module.eks.external_secrets_role_arn
+
   providers = {
     kubernetes = kubernetes.eks
     helm       = helm.eks
