@@ -28,6 +28,26 @@ spec:
                 secretKeyRef:
                   name: boutique-secrets
                   key: USERS_DB_URL
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3006
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3006
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
+          # Observed peak ~25 MiB memory, <0.01 CPU (Prometheus, Oct 2026); no CPU limit to avoid throttling
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
 
 --- 
 
@@ -40,7 +60,8 @@ spec:
   selector:
     app: user-service
   ports:
-    - protocol: TCP
+    - name: http  # scraped by the ServiceMonitor
+      protocol: TCP
       port: 3006
       targetPort: 3006
   type: ClusterIP

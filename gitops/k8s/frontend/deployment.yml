@@ -21,6 +21,27 @@ spec:
           env:
             - name: REACT_APP_API_URL
               value: "http://gateway:3001/api"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            failureThreshold: 3
+          # Observed peak ~4 MiB memory, <0.01 CPU (Prometheus, Oct 2026); no CPU limit to avoid throttling
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+
 ---
 apiVersion: v1
 kind: Service
