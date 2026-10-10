@@ -66,11 +66,11 @@ resource "helm_release" "monitoring" {
         }
       }
 
-      # Public so the aiops-assistant Lambdas (outside the VPC) can query it.
-      # No auth on Prometheus — switch back to ClusterIP when not demoing.
+      # Private only. Kira's metrics and health tools run inside the cluster
+      # and query it at kube-prometheus-stack-prometheus.monitoring.svc:9090.
       prometheus = {
         service = {
-          type = "LoadBalancer"
+          type = "ClusterIP"
         }
       }
 

@@ -10,6 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py agent.py ./
 COPY schemas/ schemas/
+# fetch_metrics and fetch_health run in-process (agent.py); fetch_logs stays a Lambda
+COPY lambda/fetch_metrics/lambda_function.py lambda/fetch_metrics/
+COPY lambda/fetch_health/lambda_function.py lambda/fetch_health/
 
 RUN useradd --create-home --uid 10001 kira
 USER 10001

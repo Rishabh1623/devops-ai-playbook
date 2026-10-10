@@ -194,7 +194,8 @@ resource "aws_eks_pod_identity_association" "fluent_bit" {
   depends_on = [aws_eks_addon.pod_identity_agent]
 }
 
-# aiops-assistant (Kira) -> Bedrock Claude + aiops Lambdas via EKS Pod Identity
+# aiops-assistant (Kira) -> Bedrock Claude, the fetch-logs Lambda, and read-only
+# EKS (fetch_service_health runs in the pod) via EKS Pod Identity
 
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
@@ -213,12 +214,21 @@ data "aws_iam_policy_document" "aiops_assistant" {
   }
 
   statement {
-    sid     = "InvokeTools"
-    actions = ["lambda:InvokeFunction"]
-    resources = [
-      for fn in ["aiops-fetch-logs", "aiops-fetch-metrics", "aiops-fetch-health"] :
-      "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:${fn}"
-    ]
+    sid       = "InvokeTools"
+    actions   = ["lambda:InvokeFunction"]
+    resources = ["arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:aiops-fetch-logs"]
+  }
+
+  statement {
+    sid       = "ReadClusterHealth"
+    actions   = ["eks:DescribeCluster", "eks:ListNodegroups"]
+    resources = [aws_eks_cluster.eks.arn]
+  }
+
+  statement {
+    sid       = "ReadNodegroupHealth"
+    actions   = ["eks:DescribeNodegroup"]
+    resources = ["arn:aws:eks:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:nodegroup/${aws_eks_cluster.eks.name}/*/*"]
   }
 }
 

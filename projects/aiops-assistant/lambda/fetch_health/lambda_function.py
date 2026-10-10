@@ -8,8 +8,12 @@ from datetime import datetime, timedelta
 DEFAULT_CLUSTER = "eks-cluster"
 DEFAULT_NAMESPACE = "boutique"
 REGION = "us-east-1"
-# Set as the Lambda environment variable PROMETHEUS_URL, e.g. http://<elb-hostname>:9090
-PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://<YOUR_PROMETHEUS_ELB_URL>:9090")
+# Runs inside the Kira pod (agent.py), so Prometheus is reached at its private
+# in-cluster ClusterIP address. Override with PROMETHEUS_URL, e.g. http://localhost:9090
+# with `kubectl port-forward` when running Kira on a laptop.
+PROMETHEUS_URL = os.environ.get(
+    "PROMETHEUS_URL", "http://kube-prometheus-stack-prometheus.monitoring.svc:9090"
+)
 
 def prometheus_query(query):
     """Run an instant PromQL query and return the result."""
