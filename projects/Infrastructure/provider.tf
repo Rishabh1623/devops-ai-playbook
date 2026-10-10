@@ -1,5 +1,15 @@
 terraform {
-  required_version = ">= 1.5"
+  required_version = ">= 1.10" # S3 native state locking (use_lockfile)
+
+  # State bucket is created by bootstrap/ (versioned, encrypted, TLS only).
+  # Locking uses an S3 lock file next to the state; no DynamoDB table needed.
+  backend "s3" {
+    bucket       = "devops-ai-playbook-tfstate-955510722779"
+    key          = "infrastructure/terraform.tfstate"
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true
+  }
 
   required_providers {
     aws = {

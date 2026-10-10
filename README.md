@@ -30,6 +30,7 @@ I followed the series, deployed it to my own AWS account, and fixed and extended
 - CI runs on every push to `project-demo` and updates image tags for Argo CD (`0193700`)
 - Frontend exposed publicly through a LoadBalancer on port 80 (`a6ef1de`)
 - Pod logs shipped to CloudWatch with Fluent Bit, using an EKS Pod Identity role instead of the node role (`c663136`)
+- Terraform state moved from a local file to a versioned, encrypted S3 bucket with S3-native locking; the bucket is created by `projects/Infrastructure/bootstrap/` (#3)
 
 **AIOps (Kira)**
 - Bedrock Agents (classic) is closed to new accounts, so Kira was rebuilt as its own agent loop: Claude on Bedrock (Converse API) calling the Lambdas as tools (`ff1abdc`)
