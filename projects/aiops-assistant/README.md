@@ -15,6 +15,7 @@ Kira agent loop (agent.py) ──► Claude on Bedrock (Converse API, tool use)
       ├── fetch_logs           → Lambda → CloudWatch Logs
       ├── fetch_metrics        → in-process → Prometheus (ClusterIP, private)
       ├── fetch_service_health → in-process → EKS API + Prometheus (ClusterIP, private)
+      ├── fetch_recent_changes → in-process → K8s events/rollouts, Argo CD history, GitHub commits
       └── scale / restart / rollback_deployment
                                → Approve / Reject in the UI → Kubernetes API (boutique only)
 ```
@@ -131,6 +132,24 @@ Open **http://localhost:8501** in your browser.
 
 ---
 
+## What changed? (`fetch_recent_changes`)
+
+Most incidents follow a change, so Kira checks this early in every investigation. For a time window (`hours_back`, default 6, max 48), optionally filtered to one `deployment`, it returns:
+
+| Source | What | Notes |
+|--------|------|-------|
+| Kubernetes events | scaling, restarts, probe failures, back-offs | The API server keeps events about 1 hour |
+| Deployments | replicas, available, revision, and `scaled_by` (who last set replicas, from `managedFields`, e.g. `kubectl` via `scale`) | |
+| Rollouts | ReplicaSet revisions created in the window, with image tags | |
+| Argo CD | sync status, health, deployed revision, sync history | |
+| Commits | recent commits on `project-demo`, with the deployed one marked | GitHub API, no token needed for this public repo (60 requests/hour per IP); set `GITHUB_TOKEN` to raise it. `KIRA_GITHUB_REPO` / `KIRA_GIT_BRANCH` override the defaults |
+
+Each source is fetched separately, so one failing (e.g. a missing permission) returns its error and the others still come back. Results are capped (30 events, 15 rollouts, 10 syncs, 15 commits), about 3–4k tokens per call.
+
+**Permissions:** the `aiops-assistant-read` Role in `gitops/k8s/aiops-assistant/rbac.yml` (`list` events and deployments in `boutique`), and the `aiops-assistant-read-app` Role in `projects/Infrastructure/modules/argocd/main.tf` (`get` on the `boutique` Argo CD Application only). The second is in Terraform because the GitOps kustomization puts every resource in `boutique`.
+
+---
+
 ## Remediation (with approval)
 
 Kira can fix what it finds, but only after an engineer approves each action:
@@ -189,6 +208,8 @@ aiops-assistant/
 ├── agent.py                # Kira agent loop (Claude + tools)
 ├── guardrails.py           # Untrusted-output wrapping, budgets, rate limit, allowlist
 ├── remediation.py          # Write tools: scale / restart / rollback (with approval)
+├── changes.py              # fetch_recent_changes: events, rollouts, Argo CD syncs, commits
+├── k8s.py                  # Kubernetes client setup shared by the in-process tools
 ├── deploy.sh               # fetch_logs Lambda checks / configuration
 ├── setup-iam.sh            # Lambda IAM role and policies setup
 ├── requirements.txt        # Python dependencies
@@ -205,7 +226,8 @@ aiops-assistant/
 │   └── generate_sample_data.py  # Seed CloudWatch with test errors
 └── tests/
     ├── test_guardrails.py  # Guardrail and prompt-injection tests
-    └── test_remediation.py # Approval flow and write tool tests
+    ├── test_remediation.py # Approval flow and write tool tests
+    └── test_changes.py     # fetch_recent_changes tests (+ opt-in live demo)
 ```
 
 ---

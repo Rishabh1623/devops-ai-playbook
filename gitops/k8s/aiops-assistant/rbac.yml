@@ -35,3 +35,34 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: aiops-assistant-remediation
+---
+# Kira's fetch_recent_changes tool (#10): read-only events and deployments.
+# The Argo CD Application read (argocd namespace) is in Terraform,
+# projects/Infrastructure/modules/argocd/main.tf, because this kustomization
+# sets every resource's namespace to boutique.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aiops-assistant-read
+  namespace: boutique
+rules:
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aiops-assistant-read
+  namespace: boutique
+subjects:
+  - kind: ServiceAccount
+    name: aiops-assistant
+    namespace: boutique
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aiops-assistant-read

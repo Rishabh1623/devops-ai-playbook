@@ -116,3 +116,38 @@ resource "helm_release" "external_secrets" {
     })
   ]
 }
+
+# Kira's fetch_recent_changes tool (#10) reads the boutique Application's
+# sync history. Read-only, this one Application only.
+resource "kubernetes_role_v1" "aiops_assistant_read_app" {
+  metadata {
+    name      = "aiops-assistant-read-app"
+    namespace = kubernetes_namespace_v1.argocd.metadata[0].name
+  }
+
+  rule {
+    api_groups     = ["argoproj.io"]
+    resources      = ["applications"]
+    resource_names = ["boutique"]
+    verbs          = ["get"]
+  }
+}
+
+resource "kubernetes_role_binding_v1" "aiops_assistant_read_app" {
+  metadata {
+    name      = "aiops-assistant-read-app"
+    namespace = kubernetes_namespace_v1.argocd.metadata[0].name
+  }
+
+  role_ref {
+    api_group = "rbac.authorization.k8s.io"
+    kind      = "Role"
+    name      = kubernetes_role_v1.aiops_assistant_read_app.metadata[0].name
+  }
+
+  subject {
+    kind      = "ServiceAccount"
+    name      = "aiops-assistant"
+    namespace = "boutique"
+  }
+}

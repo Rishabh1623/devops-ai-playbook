@@ -16,6 +16,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
+import k8s
 from guardrails import ActionNotAllowed, check_action
 
 NAMESPACE = "boutique"
@@ -98,16 +99,6 @@ def normalize(name, tool_input):
     return clean
 
 
-def _apps_api():
-    from kubernetes import client, config
-
-    try:
-        config.load_incluster_config()
-    except config.ConfigException:
-        config.load_kube_config()
-    return client.AppsV1Api()
-
-
 def _images(template):
     return {c.name: c.image for c in template.spec.containers}
 
@@ -126,7 +117,7 @@ def _previous_replicaset(api, deployment):
 
 def preview(name, tool_input, api=None):
     """Current state and what will change, for the approval card."""
-    api = api or _apps_api()
+    api = api or k8s.apps_api()
     dep = api.read_namespaced_deployment(tool_input["deployment"], NAMESPACE)
     info = {
         "current_replicas": dep.spec.replicas,
@@ -182,7 +173,7 @@ def execute(name, tool_input, session_id=None, api=None):
 
     deployment = clean["deployment"]
     try:
-        api = api or _apps_api()
+        api = api or k8s.apps_api()
         if name == "scale_deployment":
             api.patch_namespaced_deployment_scale(deployment, NAMESPACE, {"spec": {"replicas": clean["replicas"]}})
         elif name == "restart_deployment":
