@@ -34,6 +34,9 @@ spec:
               value: us-east-1
             - name: BEDROCK_MODEL_ID
               value: us.anthropic.claude-sonnet-4-6
+            # fetch_metrics / fetch_service_health run in this pod and query Prometheus privately
+            - name: PROMETHEUS_URL
+              value: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
             - name: APP_PASSWORD
               valueFrom:
                 secretKeyRef:

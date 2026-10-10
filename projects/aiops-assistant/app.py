@@ -1,6 +1,6 @@
 """
 AIOps Assistant — Streamlit Chat UI
-Runs the Kira agent loop (agent.py): Claude on Bedrock calling the aiops Lambdas as tools.
+Runs the Kira agent loop (agent.py): Claude on Bedrock calling the aiops tools.
 
 Setup:
     1. pip install -r requirements.txt

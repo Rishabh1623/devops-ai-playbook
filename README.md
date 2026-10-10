@@ -35,7 +35,7 @@ I followed the series, deployed it to my own AWS account, and fixed and extended
 - Bedrock Agents (classic) is closed to new accounts, so Kira was rebuilt as its own agent loop: Claude on Bedrock (Converse API) calling the Lambdas as tools (`ff1abdc`)
 - `fetch_metrics` tool schema corrected to match the Prometheus-based Lambda (`ff1abdc`)
 - Kira containerised and deployed to EKS through GitOps and CI, with a password gate and a Pod Identity role scoped to Claude and the 3 Lambdas (`d97f71c`)
-- Prometheus exposed via a LoadBalancer so the Lambdas can query it (`ed9f816`). This is a known gap: it has no authentication and is tracked for removal
+- Prometheus exposed via a LoadBalancer so the Lambdas could query it (`ed9f816`), then made private again: `fetch_metrics` and `fetch_service_health` now run inside the Kira pod and query Prometheus over ClusterIP, so there is no public Prometheus endpoint (#6)
 
 ---
 
