@@ -139,8 +139,8 @@ Most incidents follow a change, so Kira checks this early in every investigation
 | Source | What | Notes |
 |--------|------|-------|
 | Kubernetes events | scaling, restarts, probe failures, back-offs | The API server keeps events about 1 hour |
-| Deployments | replicas, available, revision, and `scaled_by` (who last set replicas, from `managedFields`, e.g. `kubectl` via `scale`) | |
-| Rollouts | ReplicaSet revisions created in the window, with image tags | |
+| Deployments | replicas, available, revision; `changed_by`: who changed replicas or the pod template and which fields (from `managedFields`), e.g. `kubectl` → `image`; `replicas_set_via_scale`: the count was last set through the scale endpoint | A manager's time is its latest write; `argocd-controller` rewrites the whole manifest on each sync. **`kubectl scale` isn't recorded in `managedFields`** (it drops the owner without adding one), so who scaled is unknown; only the event time is. EKS audit logs would show who |
+| Rollouts | ReplicaSet revisions created in the window, with image tags and any `command` override | |
 | Argo CD | sync status, health, deployed revision, sync history | |
 | Commits | recent commits on `project-demo`, with the deployed one marked | GitHub API, no token needed for this public repo (60 requests/hour per IP); set `GITHUB_TOKEN` to raise it. `KIRA_GITHUB_REPO` / `KIRA_GIT_BRANCH` override the defaults |
 
@@ -160,12 +160,23 @@ Each source is fetched separately, so one failing (e.g. a missing permission) re
 | `crash_loop` | `product-service` pods exit 1 on start | no, the old pod keeps serving | `product-service` | crash / exit 1 / back-off / restart |
 | `bad_image` | `user-service` image tag that doesn't exist | no, the old pod keeps serving | `user-service` | image / pull |
 
-Every scenario must also call `fetch_recent_changes`. Scoring is by keywords: cheap and repeatable, but strict about wording, so read the full answers in `drills/results.jsonl` when one fails.
+Every scenario must also call `fetch_recent_changes`. A drill passes only if two checks agree:
+
+- **Keywords:** right service, right cause, expected tools. Cheap and repeatable, but they can't tell a right answer from one that uses the right words for the wrong reason.
+- **LLM grader:** Claude compares the answer with what the drill really did (each scenario's `truth`) and checks the service, the cause, and the **trigger**. Naming the real trigger, or saying it is unknown, is fine; blaming an unrelated commit or sync fails. It costs about 1–2k tokens per scenario; `--no-grader` turns it off and `KIRA_GRADER_MODEL` picks the model.
+
+Failures are injected with field manager `kubectl`, as an engineer's change would be. Read the full answers in `drills/results.jsonl` when one fails.
+
+**What the first drills found** (see `drills/RESULTS.md`): with keyword scoring, every drill passed, but Kira blamed nearby CI commits and Argo CD syncs for changes made with kubectl. The grader caught it, and three fixes followed:
+- `fetch_recent_changes` showed who changed *replicas* but not the pod template, and rollouts showed images but not commands. It now has `changed_by` (manager and fields: image, command, ...) and `commands`.
+- `kubectl scale` isn't recorded in `managedFields` on this cluster, so who scaled can't be known. The tool now reports `replicas_set_via_scale`, and Kira says "manual scale, unknown actor" instead of guessing.
+- Kira's prompt now says to blame a change only when the evidence ties it to the broken object, and that CI image-tag commits never change replicas or commands.
 
 ```bash
 python scripts/run_drills.py --list
 python scripts/run_drills.py                    # all scenarios, asks to confirm
 python scripts/run_drills.py -s bad_image --yes
+python scripts/run_drills.py --no-grader        # keyword scoring only
 ```
 
 - Needs `kubectl` access (`~/.kube/config`) and AWS credentials for Bedrock and the `aiops-fetch-logs` Lambda. Prometheus is reached through a `kubectl port-forward` the script starts, unless `PROMETHEUS_URL` is set.
@@ -173,7 +184,7 @@ python scripts/run_drills.py -s bad_image --yes
 - Each deployment is saved before the failure and restored after, including on errors and Ctrl-C, and the script waits until it is healthy again.
 - Kira's proposed fixes are recorded but never run.
 - Results are appended to `drills/RESULTS.md` (one table per run) and `drills/results.jsonl` (full answers). The exit code is non-zero if any drill fails or doesn't restore.
-- Each run costs Claude tokens: roughly 10–30k per scenario.
+- Each run costs Claude tokens: roughly 25–60k per scenario for Kira, plus 1–2k for the grader.
 
 ---
 

@@ -96,7 +96,8 @@ class RunScenarioTest(unittest.TestCase):
 
         o = drills.run_scenario(S["scaled_to_zero"], apps, mock.MagicMock(), kira, log=lambda *_: None)
 
-        apps.patch_namespaced_deployment_scale.assert_called_once_with("orders", "boutique", {"spec": {"replicas": 0}})
+        apps.patch_namespaced_deployment_scale.assert_called_once_with(
+            "orders", "boutique", {"spec": {"replicas": 0}}, field_manager="kubectl")
         patch = apps.patch_namespaced_deployment.call_args.args[2]
         self.assertEqual([p["path"] for p in patch], ["/spec/template", "/spec/replicas"])
         self.assertEqual(patch[1]["value"], 1)
@@ -158,6 +159,51 @@ class RunScenarioTest(unittest.TestCase):
         self.assertTrue(S["bad_image"].failure_visible(apps, core))
 
 
+def grader_reply(text):
+    bedrock = mock.MagicMock()
+    bedrock.converse.return_value = {"output": {"message": {"content": [{"text": text}]}}, "usage": {"totalTokens": 400}}
+    return bedrock
+
+
+class LLMGraderTest(unittest.TestCase):
+    def test_parses_verdict_and_sends_ground_truth(self):
+        bedrock = grader_reply('Sure: {"service": true, "cause": true, "trigger": false, "notes": "blamed commit 807ccc8"}')
+        grade = drills.LLMGrader(bedrock, "m")(S["scaled_to_zero"], "orders was scaled to 0 by commit 807ccc8")
+
+        self.assertEqual((grade["service"], grade["cause"], grade["trigger"], grade["passed"]), (True, True, False, False))
+        self.assertEqual(grade["notes"], "blamed commit 807ccc8")
+        prompt = bedrock.converse.call_args.kwargs["messages"][0]["content"][0]["text"]
+        self.assertIn("kubectl scale deployment orders --replicas=0", prompt)
+        self.assertIn("commit 807ccc8", prompt)
+
+    def test_unparseable_output_fails(self):
+        grade = drills.LLMGrader(grader_reply("I think it's fine"), "m")(S["bad_image"], "x")
+        self.assertFalse(grade["passed"])
+        self.assertIn("unparseable", grade["notes"])
+
+    def test_every_scenario_has_ground_truth(self):
+        self.assertTrue(all(s.truth for s in S.values()))
+
+    def test_grader_can_fail_a_keyword_pass(self):
+        apps = fake_apps([deployment(), deployment(replicas=0, available=0), deployment()])
+        kira = FakeKira(ChatResult(text="orders was scaled to 0 replicas by commit 807ccc8"))
+        grader = mock.MagicMock(return_value={"passed": False, "notes": "wrong trigger"})
+        with mock.patch.object(drills, "POLL_SECONDS", 0):
+            o = drills.run_scenario(S["scaled_to_zero"], apps, mock.MagicMock(), kira, log=lambda *_: None, grader=grader)
+        self.assertTrue(all(o["score"][k] for k in ("service", "cause", "tools")))
+        self.assertFalse(o["score"]["passed"])
+        self.assertTrue(o["restored"])
+
+    def test_injections_use_kubectl_field_manager(self):
+        apps = fake_apps([deployment()])
+        S["scaled_to_zero"].inject(apps, deployment())
+        self.assertEqual(apps.patch_namespaced_deployment_scale.call_args.kwargs["field_manager"], "kubectl")
+        S["bad_image"].inject(apps, deployment("user-service"))
+        self.assertEqual(apps.patch_namespaced_deployment.call_args.kwargs["field_manager"], "kubectl")
+        drills.restore(apps, "orders", {"replicas": 1, "template": {}})
+        self.assertEqual(apps.patch_namespaced_deployment.call_args.kwargs["field_manager"], "kira-drill-restore")
+
+
 class ArgoPauseTest(unittest.TestCase):
     def test_pauses_and_restores_automated_sync(self):
         custom = mock.MagicMock()
@@ -183,9 +229,11 @@ class RecordTest(unittest.TestCase):
     def test_writes_table_and_jsonl(self):
         outcomes = [
             {"scenario": "scaled_to_zero", "score": {"service": True, "cause": True, "tools": True, "passed": True},
-             "restored": True, "tools_called": ["fetch_recent_changes"], "tokens": 12000, "seconds": 40, "answer": "a"},
+             "restored": True, "tools_called": ["fetch_recent_changes"], "tokens": 12000, "seconds": 40, "answer": "a",
+             "grade": {"passed": True, "notes": ""}},
             {"scenario": "bad_image", "score": {"service": True, "cause": False, "tools": True, "passed": False},
-             "restored": True, "tools_called": [], "tokens": 0, "seconds": 5, "error": "x"},
+             "restored": True, "tools_called": [], "tokens": 0, "seconds": 5, "error": "x",
+             "grade": {"passed": False, "notes": "blamed a commit | wrongly"}},
         ]
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp) / "drills"
@@ -194,8 +242,8 @@ class RecordTest(unittest.TestCase):
             rows = [json.loads(line) for line in (d / "results.jsonl").read_text().splitlines()]
 
         self.assertIn("## 2026-10-10 12:00 UTC · `model-x`", md)
-        self.assertIn("| scaled_to_zero | ✅ | ✅ | ✅ | **pass** | ✅ | fetch_recent_changes | 12,000 | 40s |", md)
-        self.assertIn("| bad_image | ✅ | ❌ | ✅ | error |", md)
+        self.assertIn("| scaled_to_zero | ✅ | ✅ | ✅ | ✅ | **pass** | ✅ | fetch_recent_changes | 12,000 | 40s |", md)
+        self.assertIn("| bad_image | ✅ | ❌ | ✅ | ❌ blamed a commit / wrongly | error |", md)
         self.assertIn("1/2 passed.", md)
         self.assertEqual([r["model"] for r in rows], ["model-x", "model-x"])
 

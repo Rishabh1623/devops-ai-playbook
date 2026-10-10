@@ -7,7 +7,9 @@ For each scenario the script
   1. saves the target deployment, then injects a known failure
   2. waits until the failure is visible
   3. asks Kira the same vague question ("something is wrong with the shop")
-  4. scores the answer: right service, right cause, right tools
+  4. scores the answer: keyword checks (right service, cause, tools) and an
+     LLM grader that compares it with what the drill really did, so an
+     answer naming the right service but blaming the wrong change fails
   5. restores the deployment and waits until it is healthy again (always,
      including on errors and Ctrl-C)
 
@@ -54,6 +56,10 @@ QUESTION = (
 )
 FAILURE_TIMEOUT_SECONDS = 180
 POLL_SECONDS = 3
+# Failures are injected as an engineer would make them, so Kira sees the same
+# managedFields owner a real `kubectl scale` / `kubectl set image` leaves.
+INJECT_MANAGER = "kubectl"
+RESTORE_MANAGER = "kira-drill-restore"
 
 
 @dataclass
@@ -63,6 +69,7 @@ class Scenario:
     deployment: str
     cause: str            # regex the answer must match (case-insensitive)
     tools: tuple          # tools Kira must call
+    truth: str = ""       # what really happened, for the LLM grader
     outage: bool = False
 
     def inject(self, apps, dep):
@@ -74,7 +81,8 @@ class Scenario:
 
 class ScaledToZero(Scenario):
     def inject(self, apps, dep):
-        apps.patch_namespaced_deployment_scale(self.deployment, NAMESPACE, {"spec": {"replicas": 0}})
+        apps.patch_namespaced_deployment_scale(self.deployment, NAMESPACE, {"spec": {"replicas": 0}},
+                                               field_manager=INJECT_MANAGER)
 
     def failure_visible(self, apps, core):
         d = apps.read_namespaced_deployment(self.deployment, NAMESPACE)
@@ -101,7 +109,7 @@ class CrashLoop(_BadPod):
         apps.patch_namespaced_deployment(self.deployment, NAMESPACE, {"spec": {"template": {"spec": {"containers": [{
             "name": container,
             "command": ["node", "-e", "console.error('FATAL: cannot connect to config store (drill)'); process.exit(1)"],
-        }]}}}})
+        }]}}}}, field_manager=INJECT_MANAGER)
 
 
 class BadImage(_BadPod):
@@ -112,7 +120,7 @@ class BadImage(_BadPod):
         repo = container.image.rsplit(":", 1)[0]
         apps.patch_namespaced_deployment(self.deployment, NAMESPACE, {"spec": {"template": {"spec": {"containers": [{
             "name": container.name, "image": f"{repo}:drill-tag-does-not-exist",
-        }]}}}})
+        }]}}}}, field_manager=INJECT_MANAGER)
 
 
 SCENARIOS = {s.name: s for s in [
@@ -122,6 +130,10 @@ SCENARIOS = {s.name: s for s in [
         deployment="orders",
         cause=r"scal\w*\s+(down\s+)?to\s+(0|zero)|\b(0|zero)\s+replicas|replicas\W{0,5}0\b",
         tools=("fetch_recent_changes",),
+        truth=("An engineer ran `kubectl scale deployment orders --replicas=0`, a manual scale outside git. "
+               "Kubernetes doesn't record who scales through the scale endpoint, so the best possible answer "
+               "is a manual scale by an unknown actor (naming kubectl is also fine). Nothing in git or Argo CD "
+               "changed orders' replicas; any commits or syncs around that time are unrelated."),
         outage=True,
     ),
     CrashLoop(
@@ -130,6 +142,9 @@ SCENARIOS = {s.name: s for s in [
         deployment="product-service",
         cause=r"crash|exit(s|ed)?\s+(with\s+)?(code\s+)?1|back-?off|restart",
         tools=("fetch_recent_changes",),
+        truth=("An engineer used kubectl to override product-service's container command so the process "
+               "prints 'FATAL: cannot connect to config store (drill)' and exits 1. The image did not change. "
+               "Any commits or syncs around that time are unrelated."),
     ),
     BadImage(
         name="bad_image",
@@ -137,6 +152,9 @@ SCENARIOS = {s.name: s for s in [
         deployment="user-service",
         cause=r"image|pull",
         tools=("fetch_recent_changes",),
+        truth=("An engineer used kubectl to set user-service's image tag to 'drill-tag-does-not-exist', "
+               "which isn't in ECR, so new pods can't pull it. No git commit changed it; any commits or "
+               "syncs around that time are unrelated."),
     ),
 ]}
 
@@ -151,6 +169,51 @@ def score(scenario, answer, tools_called):
     }
     result["passed"] = all(result.values())
     return result
+
+
+GRADER_PROMPT = """You grade an SRE assistant's incident diagnosis against what really happened.
+
+What really happened:
+{truth}
+
+Affected deployment: {deployment}
+
+Earlier drills in the same run may have broken and restored other services a few minutes before, so
+recent events for them can appear. Mentioning those is not an error if {deployment} is diagnosed correctly.
+
+The assistant's answer:
+<answer>
+{answer}
+</answer>
+
+Return only a JSON object:
+{{"service": true/false,  // named {deployment} as the affected service
+  "cause": true/false,    // described the failure correctly
+  "trigger": true/false,  // named the real trigger, or said the trigger is unknown; false if it blamed an unrelated change (e.g. a commit or sync that didn't cause it)
+  "notes": "one sentence explaining any false"}}"""
+
+
+class LLMGrader:
+    """Claude on Bedrock compares Kira's answer with the scenario's ground truth."""
+
+    def __init__(self, bedrock, model_id):
+        self.bedrock, self.model_id = bedrock, model_id
+
+    def __call__(self, scenario, answer):
+        resp = self.bedrock.converse(
+            modelId=self.model_id,
+            messages=[{"role": "user", "content": [{"text": GRADER_PROMPT.format(
+                truth=scenario.truth, deployment=scenario.deployment, answer=answer or "(no answer)")}]}],
+            inferenceConfig={"maxTokens": 300, "temperature": 0},
+        )
+        text = "".join(b.get("text", "") for b in resp["output"]["message"]["content"])
+        match = re.search(r"\{.*\}", text, re.S)
+        verdict = json.loads(match.group(0)) if match else {}
+        grade = {k: bool(verdict.get(k)) for k in ("service", "cause", "trigger")}
+        grade["passed"] = all(grade.values())
+        grade["notes"] = verdict.get("notes", "" if match else f"unparseable grader output: {text[:200]}")
+        grade["tokens"] = resp.get("usage", {}).get("totalTokens", 0)
+        return grade
 
 
 # --- Kubernetes helpers ---
@@ -179,7 +242,7 @@ def restore(apps, deployment, saved):
     apps.patch_namespaced_deployment(deployment, NAMESPACE, [
         {"op": "replace", "path": "/spec/template", "value": saved["template"]},
         {"op": "replace", "path": "/spec/replicas", "value": saved["replicas"]},
-    ])
+    ], field_manager=RESTORE_MANAGER)
 
 
 def healthy(apps, deployment):
@@ -235,7 +298,7 @@ def ask_kira(kira):
     return {"answer": answer, "tools_called": tools, "proposed_fix": proposed, "tokens": budget.used}
 
 
-def run_scenario(scenario, apps, core, kira, log=print):
+def run_scenario(scenario, apps, core, kira, log=print, grader=None):
     started = time.monotonic()
     saved, dep = snapshot(apps, scenario.deployment)
     outcome = {"scenario": scenario.name, "deployment": scenario.deployment}
@@ -246,6 +309,9 @@ def run_scenario(scenario, apps, core, kira, log=print):
         log("🔍 failure visible, asking Kira...")
         outcome.update(ask_kira(kira))
         outcome["score"] = score(scenario, outcome["answer"], outcome["tools_called"])
+        if grader:
+            outcome["grade"] = grader(scenario, outcome["answer"])
+            outcome["score"]["passed"] = outcome["score"]["passed"] and outcome["grade"]["passed"]
     except Exception as e:
         outcome.update(error=f"{type(e).__name__}: {e}", score={"service": False, "cause": False, "tools": False, "passed": False})
     finally:
@@ -276,13 +342,16 @@ def record(outcomes, model, drills_dir=DRILLS_DIR, now=None):
             "# Kira drill results\n\nWritten by `scripts/run_drills.py`; full answers in `results.jsonl`.\n"
             "✅/❌: named the right service · named the right cause · called the expected tools.\n")
     tick = lambda ok: "✅" if ok else "❌"
-    lines = [f"\n## {when} · `{model}`\n", "| Scenario | Service | Cause | Tools | Result | Restored | Tools called | Tokens | Time |",
-             "|---|---|---|---|---|---|---|---|---|"]
+    lines = [f"\n## {when} · `{model}`\n",
+             "| Scenario | Service | Cause | Tools | Grader | Result | Restored | Tools called | Tokens | Time |",
+             "|---|---|---|---|---|---|---|---|---|---|"]
     for o in outcomes:
         s = o["score"]
         result = "**pass**" if s["passed"] else ("error" if "error" in o else "**fail**")
+        g = o.get("grade")
+        grader = "—" if g is None else (tick(g["passed"]) + ("" if g["passed"] else f" {g['notes']}".replace("|", "/")))
         lines.append(
-            f"| {o['scenario']} | {tick(s['service'])} | {tick(s['cause'])} | {tick(s['tools'])} | {result} | "
+            f"| {o['scenario']} | {tick(s['service'])} | {tick(s['cause'])} | {tick(s['tools'])} | {grader} | {result} | "
             f"{tick(o.get('restored'))} | {', '.join(o.get('tools_called', [])) or '—'} | "
             f"{o.get('tokens', 0):,} | {o.get('seconds', 0)}s |")
     passed = sum(o["score"]["passed"] for o in outcomes)
@@ -319,6 +388,7 @@ def main(argv=None):
     parser.add_argument("--list", action="store_true", help="list scenarios and exit")
     parser.add_argument("--yes", action="store_true", help="don't ask for confirmation")
     parser.add_argument("--no-record", action="store_true", help="don't write drills/RESULTS.md")
+    parser.add_argument("--no-grader", action="store_true", help="keyword scoring only (no LLM grader)")
     args = parser.parse_args(argv)
 
     chosen = [SCENARIOS[n] for n in (args.scenario or SCENARIOS)]
@@ -342,14 +412,15 @@ def main(argv=None):
 
     apps, core, custom = k8s.apps_api(), k8s.core_api(), k8s.custom_api()
     kira = agent.KiraAgent()
+    grader = None if args.no_grader else LLMGrader(kira.bedrock, os.getenv("KIRA_GRADER_MODEL", agent.MODEL_ID))
     outcomes = []
     try:
         with ArgoPause(custom):
             for s in chosen:
-                o = run_scenario(s, apps, core, kira)
+                o = run_scenario(s, apps, core, kira, grader=grader)
                 outcomes.append(o)
                 verdict = "PASS" if o["score"]["passed"] else "FAIL"
-                print(f"   {verdict} {o['score']} restored={o.get('restored')} {o.get('error', '')}\n")
+                print(f"   {verdict} {o['score']} grader={o.get('grade')} restored={o.get('restored')} {o.get('error', '')}\n")
     finally:
         if forward:
             forward.terminate()
