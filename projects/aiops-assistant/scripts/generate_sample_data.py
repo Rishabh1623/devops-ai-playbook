@@ -3,7 +3,7 @@ Generate sample CloudWatch log data for AIOps demo.
 Run this in AWS CloudShell or locally with valid AWS credentials.
 
 Usage:
-    python generate_sample_data.py --region eu-north-1
+    python generate_sample_data.py --region us-east-1
 """
 
 import boto3
@@ -81,6 +81,6 @@ def main(region: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--region", default="eu-north-1", help="AWS region")
+    parser.add_argument("--region", default="us-east-1", help="AWS region")
     args = parser.parse_args()
     main(args.region)

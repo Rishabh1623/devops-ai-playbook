@@ -23,7 +23,7 @@ import os
 from datetime import datetime, timedelta
 
 DEFAULT_LOG_GROUP = os.environ.get("LOG_GROUP_NAME", "/app/production")
-DEFAULT_REGION = os.environ.get("AWS_REGION", "eu-north-1")
+DEFAULT_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 
 def lambda_handler(event, context):
@@ -374,7 +374,7 @@ FETCH_LOGS_SCHEMA = """
     "/fetch_cloudwatch_logs": {
       "get": {
         "summary": "Fetch application logs from CloudWatch",
-        "description": "Searches CloudWatch Logs for entries matching a filter pattern within a time range. Use this when the user asks about errors, exceptions, warnings, or any application-level issues visible in logs. Available log groups: /app/production (eu-north-1) for application logs, /aws/eks/eks-cluster/cluster (us-east-1) for Kubernetes EKS cluster logs.",
+        "description": "Searches CloudWatch Logs for entries matching a filter pattern within a time range. Use this when the user asks about errors, exceptions, warnings, or any application-level issues visible in logs. Available log groups: /app/production (us-east-1) for application logs, /aws/eks/eks-cluster/cluster (us-east-1) for Kubernetes EKS cluster logs.",
         "operationId": "fetch_cloudwatch_logs",
         "parameters": [
           {
@@ -402,8 +402,8 @@ FETCH_LOGS_SCHEMA = """
             "name": "region",
             "in": "query",
             "required": false,
-            "description": "AWS region where the logs are stored. Use eu-north-1 for application logs (/app/production). Use us-east-1 for EKS cluster logs (/aws/eks/eks-cluster/cluster).",
-            "schema": { "type": "string", "default": "eu-north-1" }
+            "description": "AWS region where the logs are stored. All log groups are in us-east-1.",
+            "schema": { "type": "string", "default": "us-east-1" }
           }
         ],
         "responses": {
@@ -602,7 +602,7 @@ FETCH_HEALTH_SCHEMA = """
 # SAMPLE DATA GENERATOR
 # =============================================================================
 # Run this in CloudShell to create test logs in CloudWatch
-# Replace REGION with your region (e.g., eu-north-1)
+# Replace REGION with your region (e.g., us-east-1)
 # =============================================================================
 
 SAMPLE_DATA_SCRIPT = """
@@ -645,7 +645,7 @@ print('Done! 100 log entries pushed to /app/production')
 ENV_TEMPLATE = """
 AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
-AWS_REGION=eu-north-1
+AWS_REGION=us-east-1
 BEDROCK_AGENT_ID=
 BEDROCK_AGENT_ALIAS_ID=
 """
