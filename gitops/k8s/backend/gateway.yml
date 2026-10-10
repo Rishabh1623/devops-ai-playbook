@@ -27,12 +27,33 @@ spec:
               value: "http://auth:3002"
             - name: PRODUCTS_SERVICE_URL
               value: "http://product-service:3003"
-            - name: ORDER_SERVICE_URL
-              value: "http://order-service:3004"
+            # /api/orders goes to `orders` (the gateway reads ORDERS_SERVICE_URL only).
+            # order-service isn't called by the gateway or the frontend.
             - name: ORDERS_SERVICE_URL
               value: "http://orders:3005"
             - name: USERS_SERVICE_URL
               value: "http://user-service:3006"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3001
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
+          # Observed peak ~25 MiB memory, <0.01 CPU (Prometheus, Oct 2026); no CPU limit to avoid throttling
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+
 ---
 apiVersion: v1
 kind: Service

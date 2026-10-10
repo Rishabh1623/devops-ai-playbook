@@ -9,9 +9,12 @@ spec:
   namespaceSelector:
     matchNames:
       - boutique
+  # All 6 backend Services; each names its port `http`
   selector:
-    matchLabels:
-      app: gateway   
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [auth, gateway, orders, order-service, product-service, user-service]
   endpoints:
     - port: http
       path: /metrics

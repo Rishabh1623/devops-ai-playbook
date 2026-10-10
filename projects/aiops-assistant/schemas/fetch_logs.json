@@ -9,7 +9,7 @@
     "/fetch_cloudwatch_logs": {
       "get": {
         "summary": "Fetch application logs from CloudWatch",
-        "description": "Searches CloudWatch Logs for entries matching a filter pattern within a time range. Use this when the user asks about errors, exceptions, warnings, or any application-level issues visible in logs. Available log groups: /eks/boutique/pods (us-east-1) for pod-level application logs from the boutique microservices (orders, auth, gateway, frontend, products), /aws/eks/eks-cluster/cluster (us-east-1) for Kubernetes control plane logs, /app/production (eu-north-1) for synthetic demo logs.",
+        "description": "Searches CloudWatch Logs for entries matching a filter pattern within a time range. Use this when the user asks about errors, exceptions, warnings, or any application-level issues visible in logs. Available log groups: /eks/boutique/pods (us-east-1) for pod-level application logs from the boutique microservices (orders, auth, gateway, frontend, products), /aws/eks/eks-cluster/cluster (us-east-1) for Kubernetes control plane logs, /app/production (us-east-1) for synthetic demo logs from scripts/generate_sample_data.py.",
         "operationId": "fetch_cloudwatch_logs",
         "parameters": [
           {
@@ -37,7 +37,7 @@
             "name": "region",
             "in": "query",
             "required": false,
-            "description": "AWS region where the logs are stored. Use us-east-1 for EKS pod logs (/eks/boutique/pods) and control plane logs (/aws/eks/eks-cluster/cluster). Use eu-north-1 for synthetic demo logs (/app/production).",
+            "description": "AWS region where the logs are stored. All log groups are in us-east-1.",
             "schema": { "type": "string", "default": "us-east-1" }
           }
         ],
