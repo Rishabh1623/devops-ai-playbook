@@ -150,6 +150,33 @@ Each source is fetched separately, so one failing (e.g. a missing permission) re
 
 ---
 
+## Incident drills
+
+`scripts/run_drills.py` checks that Kira still finds root causes after a change to the prompt, model (`BEDROCK_MODEL_ID`) or tools. For each scenario it breaks one deployment on purpose, asks Kira the same vague question ("something is wrong with the shop… which service and what caused it?"), scores the answer, and puts the deployment back:
+
+| Scenario | Failure | Outage? | Kira must name | Cause keywords |
+|----------|---------|---------|----------------|----------------|
+| `scaled_to_zero` | `orders` scaled to 0 | yes, while the drill runs (~1–2 min) | `orders` | scaled to 0 / 0 replicas |
+| `crash_loop` | `product-service` pods exit 1 on start | no, the old pod keeps serving | `product-service` | crash / exit 1 / back-off / restart |
+| `bad_image` | `user-service` image tag that doesn't exist | no, the old pod keeps serving | `user-service` | image / pull |
+
+Every scenario must also call `fetch_recent_changes`. Scoring is by keywords: cheap and repeatable, but strict about wording, so read the full answers in `drills/results.jsonl` when one fails.
+
+```bash
+python scripts/run_drills.py --list
+python scripts/run_drills.py                    # all scenarios, asks to confirm
+python scripts/run_drills.py -s bad_image --yes
+```
+
+- Needs `kubectl` access (`~/.kube/config`) and AWS credentials for Bedrock and the `aiops-fetch-logs` Lambda. Prometheus is reached through a `kubectl port-forward` the script starts, unless `PROMETHEUS_URL` is set.
+- Argo CD auto-sync is paused for the run (self-heal would undo the failures) and put back afterwards.
+- Each deployment is saved before the failure and restored after, including on errors and Ctrl-C, and the script waits until it is healthy again.
+- Kira's proposed fixes are recorded but never run.
+- Results are appended to `drills/RESULTS.md` (one table per run) and `drills/results.jsonl` (full answers). The exit code is non-zero if any drill fails or doesn't restore.
+- Each run costs Claude tokens: roughly 10–30k per scenario.
+
+---
+
 ## Remediation (with approval)
 
 Kira can fix what it finds, but only after an engineer approves each action:
@@ -223,11 +250,14 @@ aiops-assistant/
 │   ├── fetch_metrics.json  # Tool definition for fetch_metrics (OpenAPI)
 │   └── fetch_health.json   # Tool definition for fetch_health (OpenAPI)
 ├── scripts/
-│   └── generate_sample_data.py  # Seed CloudWatch with test errors
+│   ├── generate_sample_data.py  # Seed CloudWatch with test errors
+│   └── run_drills.py       # Incident drills: break, ask Kira, score, restore
+├── drills/                 # Drill results (RESULTS.md, results.jsonl)
 └── tests/
     ├── test_guardrails.py  # Guardrail and prompt-injection tests
     ├── test_remediation.py # Approval flow and write tool tests
-    └── test_changes.py     # fetch_recent_changes tests (+ opt-in live demo)
+    ├── test_changes.py     # fetch_recent_changes tests (+ opt-in live demo)
+    └── test_drills.py      # Drill script tests (no cluster needed)
 ```
 
 ---
