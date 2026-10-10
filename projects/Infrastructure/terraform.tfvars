@@ -31,7 +31,9 @@ desired_size = 2
 min_size     = 1
 max_size     = 2
 
-disk_size = 30
+# Matches the live node group. Changing disk_size replaces the node group (new
+# nodes, all pods rescheduled): plan it for a quiet time.
+disk_size = 20
 
 repositories = [
   "frontend",
