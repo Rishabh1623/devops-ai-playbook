@@ -139,14 +139,52 @@ Most incidents follow a change, so Kira checks this early in every investigation
 | Source | What | Notes |
 |--------|------|-------|
 | Kubernetes events | scaling, restarts, probe failures, back-offs | The API server keeps events about 1 hour |
-| Deployments | replicas, available, revision, and `scaled_by` (who last set replicas, from `managedFields`, e.g. `kubectl` via `scale`) | |
-| Rollouts | ReplicaSet revisions created in the window, with image tags | |
+| Deployments | replicas, available, revision; `changed_by`: who changed replicas or the pod template and which fields (from `managedFields`), e.g. `kubectl` → `image`; `replicas_set_via_scale`: the count was last set through the scale endpoint | A manager's time is its latest write; `argocd-controller` rewrites the whole manifest on each sync. **`kubectl scale` isn't recorded in `managedFields`** (it drops the owner without adding one), so who scaled is unknown; only the event time is. EKS audit logs would show who |
+| Rollouts | ReplicaSet revisions created in the window, with image tags and any `command` override | |
 | Argo CD | sync status, health, deployed revision, sync history | |
 | Commits | recent commits on `project-demo`, with the deployed one marked | GitHub API, no token needed for this public repo (60 requests/hour per IP); set `GITHUB_TOKEN` to raise it. `KIRA_GITHUB_REPO` / `KIRA_GIT_BRANCH` override the defaults |
 
 Each source is fetched separately, so one failing (e.g. a missing permission) returns its error and the others still come back. Results are capped (30 events, 15 rollouts, 10 syncs, 15 commits), about 3–4k tokens per call.
 
 **Permissions:** the `aiops-assistant-read` Role in `gitops/k8s/aiops-assistant/rbac.yml` (`list` events and deployments in `boutique`), and the `aiops-assistant-read-app` Role in `projects/Infrastructure/modules/argocd/main.tf` (`get` on the `boutique` Argo CD Application only). The second is in Terraform because the GitOps kustomization puts every resource in `boutique`.
+
+---
+
+## Incident drills
+
+`scripts/run_drills.py` checks that Kira still finds root causes after a change to the prompt, model (`BEDROCK_MODEL_ID`) or tools. For each scenario it breaks one deployment on purpose, asks Kira the same vague question ("something is wrong with the shop… which service and what caused it?"), scores the answer, and puts the deployment back:
+
+| Scenario | Failure | Outage? | Kira must name | Cause keywords |
+|----------|---------|---------|----------------|----------------|
+| `scaled_to_zero` | `orders` scaled to 0 | yes, while the drill runs (~1–2 min) | `orders` | scaled to 0 / 0 replicas |
+| `crash_loop` | `product-service` pods exit 1 on start | no, the old pod keeps serving | `product-service` | crash / exit 1 / back-off / restart |
+| `bad_image` | `user-service` image tag that doesn't exist | no, the old pod keeps serving | `user-service` | image / pull |
+
+Every scenario must also call `fetch_recent_changes`. A drill passes only if two checks agree:
+
+- **Keywords:** right service, right cause, expected tools. Cheap and repeatable, but they can't tell a right answer from one that uses the right words for the wrong reason.
+- **LLM grader:** Claude compares the answer with what the drill really did (each scenario's `truth`) and checks the service, the cause, and the **trigger**. Naming the real trigger, or saying it is unknown, is fine; blaming an unrelated commit or sync fails. It costs about 1–2k tokens per scenario; `--no-grader` turns it off and `KIRA_GRADER_MODEL` picks the model.
+
+Failures are injected with field manager `kubectl`, as an engineer's change would be. Read the full answers in `drills/results.jsonl` when one fails.
+
+**What the first drills found** (see `drills/RESULTS.md`): with keyword scoring, every drill passed, but Kira blamed nearby CI commits and Argo CD syncs for changes made with kubectl. The grader caught it, and three fixes followed:
+- `fetch_recent_changes` showed who changed *replicas* but not the pod template, and rollouts showed images but not commands. It now has `changed_by` (manager and fields: image, command, ...) and `commands`.
+- `kubectl scale` isn't recorded in `managedFields` on this cluster, so who scaled can't be known. The tool now reports `replicas_set_via_scale`, and Kira says "manual scale, unknown actor" instead of guessing.
+- Kira's prompt now says to blame a change only when the evidence ties it to the broken object, and that CI image-tag commits never change replicas or commands.
+
+```bash
+python scripts/run_drills.py --list
+python scripts/run_drills.py                    # all scenarios, asks to confirm
+python scripts/run_drills.py -s bad_image --yes
+python scripts/run_drills.py --no-grader        # keyword scoring only
+```
+
+- Needs `kubectl` access (`~/.kube/config`) and AWS credentials for Bedrock and the `aiops-fetch-logs` Lambda. Prometheus is reached through a `kubectl port-forward` the script starts, unless `PROMETHEUS_URL` is set.
+- Argo CD auto-sync is paused for the run (self-heal would undo the failures) and put back afterwards.
+- Each deployment is saved before the failure and restored after, including on errors and Ctrl-C, and the script waits until it is healthy again.
+- Kira's proposed fixes are recorded but never run.
+- Results are appended to `drills/RESULTS.md` (one table per run) and `drills/results.jsonl` (full answers). The exit code is non-zero if any drill fails or doesn't restore.
+- Each run costs Claude tokens: roughly 25–60k per scenario for Kira, plus 1–2k for the grader.
 
 ---
 
@@ -223,11 +261,14 @@ aiops-assistant/
 │   ├── fetch_metrics.json  # Tool definition for fetch_metrics (OpenAPI)
 │   └── fetch_health.json   # Tool definition for fetch_health (OpenAPI)
 ├── scripts/
-│   └── generate_sample_data.py  # Seed CloudWatch with test errors
+│   ├── generate_sample_data.py  # Seed CloudWatch with test errors
+│   └── run_drills.py       # Incident drills: break, ask Kira, score, restore
+├── drills/                 # Drill results (RESULTS.md, results.jsonl)
 └── tests/
     ├── test_guardrails.py  # Guardrail and prompt-injection tests
     ├── test_remediation.py # Approval flow and write tool tests
-    └── test_changes.py     # fetch_recent_changes tests (+ opt-in live demo)
+    ├── test_changes.py     # fetch_recent_changes tests (+ opt-in live demo)
+    └── test_drills.py      # Drill script tests (no cluster needed)
 ```
 
 ---

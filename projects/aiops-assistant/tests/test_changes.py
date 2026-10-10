@@ -79,7 +79,10 @@ COMMITS = [
 
 
 def fake_clients():
-    """`orders` scaled to 0 by kubectl 20 minutes ago (the #10 demo scenario)."""
+    """`orders` scaled to 0 by `kubectl scale` 20 minutes ago (the #10 demo scenario).
+
+    As on a real cluster: the scale endpoint drops replicas ownership and records no manager.
+    """
     core = mock.MagicMock()
     core.list_namespaced_event.return_value = client.CoreV1EventList(items=[
         event("orders", "Deployment", "ScalingReplicaSet", "Scaled down replica set orders-7d9f to 0 from 1", 20),
@@ -90,11 +93,10 @@ def fake_clients():
     apps = mock.MagicMock()
     apps.list_namespaced_deployment.return_value = client.V1DeploymentList(items=[
         deployment("orders", "u-orders", 0, 0, [
-            managed("argocd-controller", 120),
-            managed("kubectl", 20, subresource="scale"),
+            managed("argocd-controller", 120, owns_replicas=False),
             managed("kube-controller-manager", 19, subresource="status", owns_replicas=False),
         ]),
-        deployment("gateway", "u-gateway", 1, 1),
+        deployment("gateway", "u-gateway", 1, 1, [managed("argocd-controller", 120)]),
     ])
     apps.list_namespaced_replica_set.return_value = client.V1ReplicaSetList(items=[
         replicaset("u-orders", 4, 120, "123.dkr.ecr.us-east-1.amazonaws.com/orders:abc1234"),
@@ -123,7 +125,10 @@ class FetchRecentChangesTest(unittest.TestCase):
 
         orders = next(d for d in result["deployments"] if d["name"] == "orders")
         self.assertEqual((orders["replicas"], orders["available"]), (0, 0))
-        self.assertEqual(orders["scaled_by"][0], {"manager": "kubectl", "subresource": "scale", "time": "2026-10-10T11:40:00Z"})
+        self.assertTrue(orders["replicas_set_via_scale"])  # who scaled isn't recorded
+        self.assertNotIn("kube-controller-manager", json.dumps(orders["changed_by"]))  # status writes are noise
+        gateway = next(d for d in result["deployments"] if d["name"] == "gateway")
+        self.assertFalse(gateway["replicas_set_via_scale"])  # still owned by Argo CD
         scale = next(e for e in result["events"] if e["reason"] == "ScalingReplicaSet")
         self.assertEqual(scale["object"], "Deployment/orders")
         self.assertIn("to 0 from 1", scale["message"])
@@ -192,6 +197,28 @@ class FetchRecentChangesTest(unittest.TestCase):
                 self.assertEqual(result["window_hours"], expected)
 
 
+class TemplateChangeTest(unittest.TestCase):
+    """Drill finding (#9): kubectl changing image or command must be visible, not just replicas."""
+
+    def test_changed_by_lists_container_fields(self):
+        dep = deployment("product-service", "u-p", 1, 1, [client.V1ManagedFieldsEntry(
+            manager="kubectl", operation="Update", time=ago(5), fields_v1={"f:spec": {"f:template": {"f:spec": {
+                "f:containers": {'k:{"name":"product-service"}': {".": {}, "f:command": {}, "f:name": {}}}}}}})])
+        self.assertEqual(changes._changed_by(dep, ago(60)), [
+            {"manager": "kubectl", "subresource": None, "time": "2026-10-10T11:55:00Z", "fields": ["command"]}])
+
+    def test_rollout_shows_command_override(self):
+        clients = fake_clients()
+        rs = replicaset("u-orders", 5, 5, "orders:abc1234")
+        rs.spec.template.spec.containers[0].command = ["node", "-e", "process.exit(1)"]
+        clients["apps"].list_namespaced_replica_set.return_value.items.append(rs)
+        with github_response(COMMITS):
+            result = changes.fetch_recent_changes(hours_back=6, now=NOW, **clients)
+        latest = result["rollouts"][0]
+        self.assertEqual((latest["revision"], latest["commands"]), ("5", ["node -e process.exit(1)"]))
+        self.assertNotIn("commands", result["rollouts"][1])
+
+
 class AgentIntegrationTest(unittest.TestCase):
     def test_run_ignores_parameters_the_model_should_not_set(self):
         with mock.patch.object(changes, "fetch_recent_changes", return_value={"status": "ok"}) as fetch:
@@ -245,7 +272,8 @@ class LiveChangeCorrelationTest(unittest.TestCase):
         self.assertLess(calls.index("fetch_recent_changes"), 3, "should check recent changes early")
         self.assertIn("orders", answer.lower())
         self.assertIn("11:40", answer)
-        self.assertRegex(answer.lower(), r"kubectl|scal")
+        self.assertRegex(answer.lower(), r"manual|scal")
+        self.assertNotRegex(answer.lower(), r"commit (abc1234|def5678)[^.]*(scal|replica)")
 
 
 if __name__ == "__main__":

@@ -4,8 +4,8 @@ can link a symptom to the change that caused it.
 
 Read-only. Returns, newest first:
 - Kubernetes events in `boutique` (the API server keeps them ~1 hour)
-- deployment state, rollout history (ReplicaSet revisions), and who last
-  scaled each deployment (from managedFields)
+- deployment state, rollout history (ReplicaSet revisions), and who changed
+  each deployment's replicas or pod template, and which fields (managedFields)
 - Argo CD sync history for the `boutique` Application
 - recent commits on the deployed branch (GitHub API)
 
@@ -35,7 +35,8 @@ TOOL_SPECS = [{"toolSpec": {
     "name": "fetch_recent_changes",
     "description": (
         "What changed recently in the boutique namespace: Kubernetes events (scaling, restarts, "
-        "failures; kept about 1 hour), deployment rollouts and who last scaled each deployment, "
+        "failures; kept about 1 hour), deployment rollouts and who changed each deployment's replicas or pod "
+        "template (image, command, ...), "
         "Argo CD syncs, and recent git commits. Use early in an investigation to link a symptom "
         "to the change that caused it."
     ),
@@ -74,14 +75,47 @@ def _events(core, since, deployment):
     return out[:MAX_EVENTS]
 
 
-def _scaled_by(dep, since):
-    """managedFields entries that own spec.replicas and changed within the window."""
+def _container_fields(template_fields):
+    """Container field names (image, command, env, ...) set in a managedFields pod template."""
+    names = set()
+    for key, container in template_fields.get("f:spec", {}).get("f:containers", {}).items():
+        if key.startswith("k:"):
+            names.update(f[2:] for f in container if f.startswith("f:") and f != "f:name")
+    return sorted(names)
+
+
+def _changed_by(dep, since):
+    """Who changed replicas or the pod template within the window, and which fields (from managedFields).
+
+    A manager's time is its latest write to this deployment; Argo CD's
+    `argocd-controller` rewrites the whole manifest on every sync. Changes made
+    through the scale endpoint (`kubectl scale`) are not recorded here: see
+    _replicas_set_via_scale().
+    """
     out = []
     for m in dep.metadata.managed_fields or []:
-        owns_replicas = "f:replicas" in (m.fields_v1 or {}).get("f:spec", {})
-        if (owns_replicas or m.subresource == "scale") and m.time and m.time >= since:
-            out.append({"manager": m.manager, "subresource": m.subresource, "time": _iso(m.time)})
+        if not m.time or m.time < since or m.subresource == "status":
+            continue
+        spec = (m.fields_v1 or {}).get("f:spec", {})
+        fields = []
+        if "f:replicas" in spec:
+            fields.append("replicas")
+        if "f:template" in spec:
+            fields += _container_fields(spec["f:template"]) or ["template"]
+        if fields:
+            out.append({"manager": m.manager, "subresource": m.subresource, "time": _iso(m.time), "fields": fields})
     return sorted(out, key=lambda x: x["time"], reverse=True)
+
+
+def _replicas_set_via_scale(dep):
+    """True if no field manager owns spec.replicas.
+
+    Scaling through the scale endpoint (kubectl scale, an autoscaler, or an API
+    client) drops the previous owner without recording a new one, so who scaled
+    is unknown; the ScalingReplicaSet event still gives the time. (Seen on EKS
+    1.34: a manifest apply or patch of spec.replicas does record its manager.)
+    """
+    return not any("f:replicas" in (m.fields_v1 or {}).get("f:spec", {}) for m in dep.metadata.managed_fields or [])
 
 
 def _deployments(apps, since, deployment):
@@ -94,19 +128,25 @@ def _deployments(apps, since, deployment):
             "replicas": d.spec.replicas,
             "available": d.status.available_replicas or 0,
             "revision": (d.metadata.annotations or {}).get(REVISION_ANNOTATION),
-            "scaled_by": _scaled_by(d, since),
+            "changed_by": _changed_by(d, since),
+            "replicas_set_via_scale": _replicas_set_via_scale(d),
         })
     for rs in apps.list_namespaced_replica_set(NAMESPACE).items:
         owner = next((by_uid[r.uid] for r in rs.metadata.owner_references or [] if r.uid in by_uid), None)
         created = rs.metadata.creation_timestamp
         if owner is None or created is None or created < since:
             continue
-        rollouts.append({
+        containers = rs.spec.template.spec.containers
+        rollout = {
             "deployment": owner,
             "revision": (rs.metadata.annotations or {}).get(REVISION_ANNOTATION),
             "created": _iso(created),
-            "images": [c.image.rsplit("/", 1)[-1] for c in rs.spec.template.spec.containers],
-        })
+            "images": [c.image.rsplit("/", 1)[-1] for c in containers],
+        }
+        commands = [" ".join(c.command) for c in containers if c.command]
+        if commands:
+            rollout["commands"] = commands  # overrides the image's own entrypoint
+        rollouts.append(rollout)
     rollouts.sort(key=lambda x: x["created"], reverse=True)
     return deployments, rollouts[:MAX_ROLLOUTS]
 
