@@ -377,6 +377,7 @@ with st.sidebar:
     st.markdown("- 📋 `fetch_logs` — CloudWatch Logs")
     st.markdown("- 📊 `fetch_metrics` — Prometheus pod metrics")
     st.markdown("- 🏥 `fetch_service_health` — EKS cluster & pods")
+    st.markdown("- 🕒 `fetch_recent_changes` — events, rollouts, Argo CD syncs, commits")
     st.markdown("**Actions (need your approval):**")
     st.markdown("- 🛠️ `scale_deployment` / `restart_deployment` / `rollback_deployment`")
 

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import boto3
 
+import changes
 import remediation
 from guardrails import ActionNotAllowed, TokenBudget, wrap_tool_result
 
@@ -47,14 +48,14 @@ SYSTEM_PROMPT = """You are Kira, a senior Site Reliability Engineer with 12 year
 
 You think like a real SRE during an incident — calm, methodical, and data-driven. You never guess. You always look at the data first before drawing conclusions.
 
-You have 3 read tools: fetch_logs (CloudWatch Logs), fetch_metrics (Prometheus pod metrics), and fetch_service_health (EKS cluster, node group, and pod health).
+You have 4 read tools: fetch_logs (CloudWatch Logs), fetch_metrics (Prometheus pod metrics), fetch_service_health (EKS cluster, node group, and pod health), and fetch_recent_changes (Kubernetes events, rollouts, who scaled what, Argo CD syncs, and git commits).
 
 You also have 3 write tools for deployments in the boutique namespace: scale_deployment, restart_deployment, and rollback_deployment. Each one is shown to the engineer, who must approve it before it runs. Only propose one when the evidence clearly supports it, propose one action at a time, and give the evidence in `reason`. If the engineer rejects an action, do not propose it again; suggest alternatives. After an approved action runs, call fetch_service_health to confirm the fix and report whether it worked. Changes you make are temporary because the cluster is managed by Argo CD from git: tell the engineer which change to commit to git to make the fix permanent.
 
 When an engineer comes with a problem:
 Step 1: Understand the symptom.
 Step 2: Form a hypothesis.
-Step 3: Gather evidence using your tools.
+Step 3: Gather evidence using your tools. Early on, call fetch_recent_changes: most incidents follow a change, so look for a deploy, scale, restart, sync, or commit shortly before the symptom started, and give its time and source.
 Step 4: Diagnose by correlating the data across logs, metrics, and service health.
 Step 5: Respond with root cause, evidence summary, immediate fix, and prevention steps.
 
@@ -89,6 +90,10 @@ def _load_tools():
 
 
 TOOL_SPECS, TOOL_ROUTES = _load_tools()
+
+# Read tools defined in Python (toolSpec + function) rather than schemas/
+PYTHON_TOOLS = {"fetch_recent_changes": changes.run}
+READ_TOOL_SPECS = TOOL_SPECS + changes.TOOL_SPECS
 
 
 @functools.cache
@@ -125,6 +130,11 @@ class KiraAgent:
 
     def _call_tool(self, name, tool_input):
         """Run the tool with a Bedrock-Agent-style event and return its JSON body."""
+        if name in PYTHON_TOOLS:
+            try:
+                return PYTHON_TOOLS[name](tool_input)
+            except Exception as e:
+                return {"status": "error", "message": f"{type(e).__name__}: {e}"}
         if name not in TOOL_ROUTES:
             return {"status": "error", "message": f"Unknown tool: {name}"}
         backend, api_path, method = TOOL_ROUTES[name]
@@ -205,7 +215,7 @@ class KiraAgent:
                 modelId=MODEL_ID,
                 system=[{"text": SYSTEM_PROMPT}],
                 messages=messages,
-                toolConfig={"tools": TOOL_SPECS + remediation.TOOL_SPECS},
+                toolConfig={"tools": READ_TOOL_SPECS + remediation.TOOL_SPECS},
                 inferenceConfig={"maxTokens": MAX_TOKENS},
             )
             budget.add(resp.get("usage", {}))
