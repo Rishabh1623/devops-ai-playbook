@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agent import KiraAgent, MODEL_ID  # noqa: E402
+from guardrails import RateLimiter, TokenBudget  # noqa: E402
 
 # --- Config from environment ---
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
@@ -162,6 +163,8 @@ if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "converse_history" not in st.session_state:
     st.session_state.converse_history = []  # Converse API messages incl. tool calls
+if "question_times" not in st.session_state:
+    st.session_state.question_times = []  # rate limit; kept across "New Session"
 
 
 # --- Kira Agent ---
@@ -179,6 +182,10 @@ def get_agent():
 
 def invoke_agent(prompt: str, status) -> str:
     """Run one turn of the Kira agent loop, logging each tool call to `status`."""
+    wait = RateLimiter(st.session_state.question_times).allow()
+    if wait:
+        return f"⚠️ Rate limit reached. Try again in {wait} seconds."
+
     history = st.session_state.converse_history
     turn_start = len(history)
     history.append({"role": "user", "content": [{"text": prompt}]})
@@ -187,8 +194,11 @@ def invoke_agent(prompt: str, status) -> str:
         args = ", ".join(f"{k}={v}" for k, v in tool_input.items())
         status.write(f"🔧 `{name}({args})`")
 
+    budget = TokenBudget()
     try:
-        return get_agent().chat(history, on_tool_call=on_tool_call)
+        answer = get_agent().chat(history, on_tool_call=on_tool_call, budget=budget)
+        status.write(f"🪙 {budget.used:,} tokens used (budget {budget.limit:,})")
+        return answer
     except Exception as e:
         del history[turn_start:]  # drop the partial turn so the next one starts clean
         return f"⚠️ Error: {str(e)}"

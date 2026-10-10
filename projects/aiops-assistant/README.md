@@ -129,12 +129,35 @@ Open **http://localhost:8501** in your browser.
 
 ---
 
+## Guardrails
+
+Kira's safety and cost limits live in `guardrails.py`:
+
+| Guardrail | What it does | Setting (default) |
+|-----------|--------------|-------------------|
+| Untrusted tool output | Every tool result is wrapped as `{"untrusted_tool_output": ...}`, and the system prompt tells Claude never to follow instructions inside it. Log lines can be written by any pod, so this defends against prompt injection. | — |
+| Token budget | Input + output tokens are counted from each Converse `usage`. Once a question reaches the budget, Kira stops with a message. | `KIRA_MAX_TOKENS_PER_QUESTION` (`100000`) |
+| Rate limit | Questions per browser session in a sliding window. "New Session" does not reset it. | `KIRA_MAX_QUESTIONS_PER_WINDOW` (`10`) per `KIRA_RATE_WINDOW_SECONDS` (`300`) |
+| Action allowlist | `check_action()` allows only scale / restart / roll back of deployments in `boutique`, with 1–5 replicas. Any write tool must call it in code. | edit `guardrails.py` |
+
+The prompt instruction reduces prompt-injection risk but cannot remove it, which is why write actions are checked in code.
+
+Run the tests (the live prompt-injection test calls Claude on Bedrock and is opt-in):
+
+```bash
+python -m unittest discover tests
+KIRA_LIVE_TESTS=1 python -m unittest discover tests
+```
+
+---
+
 ## Project Structure
 
 ```
 aiops-assistant/
 ├── app.py                  # Streamlit chat UI
 ├── agent.py                # Kira agent loop (Claude + tools)
+├── guardrails.py           # Untrusted-output wrapping, budgets, rate limit, allowlist
 ├── deploy.sh               # fetch_logs Lambda checks / configuration
 ├── setup-iam.sh            # Lambda IAM role and policies setup
 ├── requirements.txt        # Python dependencies
@@ -147,8 +170,10 @@ aiops-assistant/
 │   ├── fetch_logs.json     # Tool definition for fetch_logs (OpenAPI)
 │   ├── fetch_metrics.json  # Tool definition for fetch_metrics (OpenAPI)
 │   └── fetch_health.json   # Tool definition for fetch_health (OpenAPI)
-└── scripts/
-    └── generate_sample_data.py  # Seed CloudWatch with test errors
+├── scripts/
+│   └── generate_sample_data.py  # Seed CloudWatch with test errors
+└── tests/
+    └── test_guardrails.py  # Guardrail and prompt-injection tests
 ```
 
 ---

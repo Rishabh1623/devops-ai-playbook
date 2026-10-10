@@ -37,6 +37,13 @@ spec:
             # fetch_metrics / fetch_service_health run in this pod and query Prometheus privately
             - name: PROMETHEUS_URL
               value: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+            # Guardrails (#7): per-question token budget, per-session question rate limit
+            - name: KIRA_MAX_TOKENS_PER_QUESTION
+              value: "100000"
+            - name: KIRA_MAX_QUESTIONS_PER_WINDOW
+              value: "10"
+            - name: KIRA_RATE_WINDOW_SECONDS
+              value: "300"
             - name: APP_PASSWORD
               valueFrom:
                 secretKeyRef:
