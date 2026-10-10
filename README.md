@@ -1,103 +1,66 @@
-# DevOps + AIOps Series — build-along fork
+# DevOps + AIOps on AWS EKS: a learning project
 
-> A full end-to-end DevOps project with AIOps integration, deployed and extended on AWS EKS.
+I built this while working through the **DevOps + AIOps Series** by [Vishakha Sadhwani](https://github.com/vishakhasadhwani) ([original repo](https://github.com/vishakhasadhwani/devops-ai-playbook)). I followed the series, deployed everything to my own AWS account, fixed what broke along the way, and then extended the AI part of the project.
 
----
+## What the project is
+
+A small online shop (React frontend, an API gateway, Node.js services and PostgreSQL) running on Kubernetes on AWS EKS, with a full delivery setup around it:
+
+- Terraform creates the AWS infrastructure (VPC, EKS, ECR, IAM)
+- GitHub Actions builds the images and pushes them to ECR
+- Argo CD deploys whatever is in the `gitops/` folder (GitOps)
+- Prometheus and Grafana for metrics, Fluent Bit ships logs to CloudWatch
+
+## The problem the AI part solves
+
+When something breaks in a system like this, the first part of an incident is spent digging through logs, metrics and recent deployments to work out what went wrong. **Kira** is an assistant that does that first investigation. You describe the symptom, and Kira pulls the logs, metrics, pod health and recent changes, then answers with the likely root cause and the evidence for it. If the fix is simple (scale up, restart, roll back), Kira can propose it, and nothing runs until a person clicks Approve.
+
+```
+git push → GitHub Actions → ECR → Argo CD → EKS (the shop)
+
+engineer → Kira → Claude on AWS Bedrock
+             ├─ logs            CloudWatch
+             ├─ metrics         Prometheus
+             ├─ pod health      EKS / Kubernetes
+             ├─ recent changes  events, Argo CD syncs, git commits
+             └─ fixes           only after approval
+```
+
+## What I added on top of the series
+
+- Rebuilt Kira as its own agent loop with Claude on Bedrock, because Bedrock Agents can no longer be created on new AWS accounts
+- Deployed Kira to EKS through the same CI and GitOps pipeline as the shop
+- Guardrails: tool output is treated as untrusted (a log line can contain prompt-injection text), with a token budget per question, a rate limit, and an allowlist of actions checked in code
+- Fixes with approval: Kira can scale, restart or roll back a deployment only after a person approves, using narrow Kubernetes permissions, and every action is logged
+- A "what changed?" tool, so Kira can connect a symptom to the change that caused it
+- Incident drills: a script that breaks the cluster on purpose (scale to zero, crash loop, bad image), asks Kira, grades the answer and puts everything back. Results are in [`drills/RESULTS.md`](projects/aiops-assistant/drills/RESULTS.md)
+- Security and platform fixes: CI signs in to AWS with GitHub OIDC instead of stored keys, the database password lives in Secrets Manager, Terraform state is in S3 with locking, Prometheus is private again, and every service has health checks and resource limits
+- Python tests for Kira: `cd projects/aiops-assistant && python -m unittest discover tests`
+
+## Problems I ran into
+
+The ones that taught me the most are written up in [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md):
+
+- **A practice incident:** the orders service scaled to zero, and how Kira and I traced it
+- **Prometheus open to the internet:** it had no login and was public only so Kira's tools, running outside the cluster, could reach it. I moved those tools into the cluster instead
+- **Kira blaming the wrong change:** my first drills passed, but reading the answers showed Kira blaming an unrelated deployment. A stricter grader caught it, and the real causes were missing data in Kira's tool and the fact that `kubectl scale` doesn't record who ran it
+
+Notes on earlier bugs from the series are in [`projects/Issues.md`](projects/Issues.md).
+
+## Run it yourself
+
+- Deployment guide (from the series): [`projects/README.md`](projects/README.md)
+- Kira: [`projects/aiops-assistant/README.md`](projects/aiops-assistant/README.md)
 
 ## Credits
 
-This repository is a fork of **[vishakhasadhwani/devops-ai-playbook](https://github.com/vishakhasadhwani/devops-ai-playbook)**, the *DevOps + AIOps Series* created by **[Vishakha Sadhwani](https://github.com/vishakhasadhwani)** with contributions from **Anish Bhat K**.
+The series, the boutique application, the original Terraform, GitOps and CI setup, and everything in `docs/` are the work of **Vishakha Sadhwani**, with contributions from **Anish Bhat K**.
 
-The series content, the boutique microservices application, the original Terraform, GitOps and CI setup, and the docs in `docs/` are their work. The sections from **Welcome** through **Bonus Challenge** are kept from the original series, in the original author's words.
-
-My work in this fork is listed under [What I changed](#what-i-changed).
-
----
-
-## What I changed
-
-I followed the series, deployed it to my own AWS account, and fixed and extended it. All changes are on the `project-demo` branch:
-
-**Bug fixes**
-- Frontend calls routed through the API gateway; orders use the logged-in user (`806f470`)
-- Frontend served by nginx with an `/api` proxy to the gateway (`331a353`)
-- `order-service` exposed on its real port 3004 (`065c0d4`)
-- Manifests use real ECR image references; database restored on deploy (`3f7bcc4`)
-- Argo CD pointed at this repository with auto-sync (`51c143f`)
-- `product-service` `/categories` route made reachable and its query fixed (`7521aa0`)
-
-**Pipeline and platform**
-- CI runs on every push to `project-demo` and updates image tags for Argo CD (`0193700`)
-- Frontend exposed publicly through a LoadBalancer on port 80 (`a6ef1de`)
-- Pod logs shipped to CloudWatch with Fluent Bit, using an EKS Pod Identity role instead of the node role (`c663136`)
-- Terraform state moved from a local file to a versioned, encrypted S3 bucket with S3-native locking; the bucket is created by `projects/Infrastructure/bootstrap/` (#3)
-
-**AIOps (Kira)**
-- Bedrock Agents (classic) is closed to new accounts, so Kira was rebuilt as its own agent loop: Claude on Bedrock (Converse API) calling the Lambdas as tools (`ff1abdc`)
-- `fetch_metrics` tool schema corrected to match the Prometheus-based Lambda (`ff1abdc`)
-- Kira containerised and deployed to EKS through GitOps and CI, with a password gate and a Pod Identity role scoped to Claude and the 3 Lambdas (`d97f71c`)
-- Prometheus exposed via a LoadBalancer so the Lambdas could query it (`ed9f816`), then made private again: `fetch_metrics` and `fetch_service_health` now run inside the Kira pod and query Prometheus over ClusterIP, so there is no public Prometheus endpoint (#6)
-- Safety and cost guardrails: tool output wrapped as untrusted data against prompt injection, a per-question token budget, a per-session rate limit, and an action allowlist enforced in code (#7)
-- Remediation with human approval: Kira can scale, restart or roll back the boutique app deployments, only after an engineer clicks Approve; narrowly scoped Kubernetes RBAC, and every action logged (#8)
-- `fetch_recent_changes`: Kubernetes events, rollouts, who changed what, Argo CD syncs and git commits, so Kira can link a symptom to the change that caused it (#10)
-- Incident drills that break a deployment, ask Kira, score the answer with keywords and an LLM grader, and restore the cluster; they found and fixed real gaps in Kira's change attribution (#9, `projects/aiops-assistant/drills/RESULTS.md`)
-
-**Docs and hygiene**
-- Architecture diagram below, and [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) with complete incident walk-throughs (#2)
-- Local docker-compose passwords moved to a gitignored `.env` (copy `.env.example`) (#2). The cluster's DB password is generated by Terraform and kept in Secrets Manager (`92deeca`).
-
----
-
-## Architecture
-
-**Delivery and platform**
-
-```mermaid
-flowchart LR
-    dev([Developer]) -->|git push| gh[(GitHub<br/>project-demo)]
-    gh -->|triggers| ci[GitHub Actions]
-    ci -->|build + push<br/>via OIDC role| ecr[(ECR)]
-    ci -->|commit new image tags<br/>to gitops/k8s/| gh
-    argo[Argo CD] -->|watches gitops/| gh
-    argo -->|syncs| app
-
-    subgraph eks[EKS cluster]
-        argo
-        app[boutique namespace<br/>frontend → gateway → services → Postgres]
-        eso[External Secrets] -->|DB password| app
-        fb[Fluent Bit]
-        prom[Prometheus<br/>ClusterIP only]
-    end
-
-    ecr -->|images| app
-    sm[(Secrets Manager)] --> eso
-    app -.->|pod logs| fb --> cw[(CloudWatch Logs)]
-    prom -.->|scrapes| app
-    tf[Terraform<br/>state in S3] -.->|creates VPC, EKS, ECR,<br/>IAM, Helm releases| eks
-```
-
-**Kira (AIOps assistant)**
-
-```mermaid
-flowchart LR
-    eng([Engineer]) -->|password + question| kira[Kira pod<br/>Streamlit + agent loop]
-    kira <-->|Converse API| claude[Claude on Bedrock]
-    kira -->|fetch_logs| lambda[Lambda] --> cw[(CloudWatch Logs)]
-    kira -->|fetch_metrics<br/>fetch_service_health| prom[Prometheus + EKS API]
-    kira -->|fetch_recent_changes| changes[K8s events and rollouts<br/>Argo CD history<br/>GitHub commits]
-    kira -->|scale / restart / rollback<br/>only after Approve| deploys[boutique deployments]
-```
-
-- **Delivery:** a push to `project-demo` builds the images in GitHub Actions (AWS access through OIDC, no keys), pushes them to ECR, and commits the new tag to the manifests in `gitops/k8s/`. Argo CD syncs `gitops/` into the `boutique` namespace.
-- **Platform:** Terraform (state in S3) creates the VPC, EKS, ECR, IAM roles and the Helm releases (Argo CD, kube-prometheus-stack, External Secrets). Pod logs go to CloudWatch through Fluent Bit; the DB password comes from Secrets Manager.
-- **Kira** ([`projects/aiops-assistant`](projects/aiops-assistant/README.md)): Claude on Bedrock with read tools (logs via a Lambda; metrics, health and recent changes in-pod) and approval-gated write tools. Prometheus has no public endpoint.
-- The original series' diagrams are in [`docs/part2-workflow.md`](docs/part2-workflow.md).
+Everything below this line is the original series README, unchanged. One difference in this fork: Kira uses Claude through the Bedrock Converse API instead of a Bedrock Agent.
 
 ---
 
 ## Welcome
-
-> *From here through Bonus Challenge: original series text by Vishakha Sadhwani.*
 
 Hey everyone!
 
@@ -133,7 +96,7 @@ DevOps-Practice-Guide/
 │   ├── README.md                  # EKS deployment guide (Part 3)
 │   ├── boutique-microservices/    # The application (7 services)
 │   ├── Infrastructure/            # Terraform for AWS provisioning
-│   └── aiops-assistant/           # Kira — Claude on Bedrock + Lambda tools (Part 4)
+│   └── aiops-assistant/           # Bedrock Agent — Kira (Part 4)
 ├── gitops/
 │   ├── argo-cd.yml                # ArgoCD Application manifest
 │   ├── kustomization.yml          # Kustomize entry point
@@ -249,5 +212,5 @@ Once you implement the project:
 | GitOps | ArgoCD + Kustomize |
 | Monitoring | Prometheus + Grafana |
 | Log Forwarding | AWS Fluent Bit → CloudWatch |
-| AIOps | Claude on AWS Bedrock (Converse API) + Lambda tools (Kira) |
+| AIOps | AWS Bedrock Agent (Kira) |
 | AI Assistant | Claude Code + MCP Servers |
