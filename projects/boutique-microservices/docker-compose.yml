@@ -6,7 +6,8 @@ services:
     environment:
       POSTGRES_DB: boutique_db
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres123
+      # Set in .env (copy .env.example); compose refuses to start without it
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env - see .env.example}
       POSTGRES_MULTIBYTE: auth_db,products_db,orders_db,users_db
     ports:
       - "5432:5432"
@@ -47,7 +48,7 @@ services:
       - "3007:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env - see .env.example}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
@@ -94,7 +95,7 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=3002
-      - DATABASE_URL=postgresql://postgres:postgres123@postgres:5432/auth_db
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/auth_db
     depends_on:
       postgres:
         condition: service_healthy
@@ -113,7 +114,7 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=3003
-      - DATABASE_URL=postgresql://postgres:postgres123@postgres:5432/products_db
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/products_db
     depends_on:
       postgres:
         condition: service_healthy
@@ -132,7 +133,7 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=3004
-      - DATABASE_URL=postgresql://postgres:postgres123@postgres:5432/orders_db
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/orders_db
       - AUTH_SERVICE_URL=http://auth:3002
       - PRODUCT_SERVICE_URL=http://product-service:3003
     depends_on:
@@ -157,7 +158,7 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=3005
-      - DATABASE_URL=postgresql://postgres:postgres123@postgres:5432/orders_db
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/orders_db
       - PRODUCTS_SERVICE_URL=http://product-service:3003
     depends_on:
       postgres:
@@ -177,7 +178,7 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=3006
-      - DATABASE_URL=postgresql://postgres:postgres123@postgres:5432/users_db
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/users_db
     depends_on:
       postgres:
         condition: service_healthy

@@ -85,6 +85,7 @@ From the `projects/boutique-microservices/` directory:
 
 ```bash
 cd projects/boutique-microservices
+cp .env.example .env   # then set POSTGRES_PASSWORD and GRAFANA_ADMIN_PASSWORD
 docker-compose -f docker-compose.yml up -d
 ```
 
