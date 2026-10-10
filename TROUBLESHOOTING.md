@@ -6,6 +6,10 @@ Complete incident walk-throughs from running this project, in the form **symptom
 2. [Prometheus readable from the internet](#2-prometheus-readable-from-the-internet) (security)
 3. [Kira named the right service but blamed the wrong change](#3-kira-named-the-right-service-but-blamed-the-wrong-change) (debugging the AI assistant)
 
+Runbooks:
+
+- [Move Postgres from gp2 to gp3](#move-postgres-from-gp2-to-gp3)
+
 ---
 
 ## 1. Orders can't be placed: `orders` scaled to 0
@@ -107,3 +111,75 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:909
 - Score AI answers against ground truth, not just keywords: a right answer and a wrong answer can use the same words.
 - Re-run the drills after any change to Kira (`python scripts/run_drills.py`), and read `drills/results.jsonl` when one fails.
 - Known limitations: the crash-loop drill's error text says `(drill)`, which hints to Kira that it's a test; one run of each scenario can vary, so repeat before trusting a single result.
+
+---
+
+## Runbooks
+
+### Move Postgres from gp2 to gp3
+
+**Why:** gp3 has a 3000 IOPS / 125 MB/s baseline at any size and costs about 20% less than gp2. At 10 GiB, gp2's baseline is only 100 IOPS (with burst credits). The current Postgres volume (checked Oct 2026) is gp2, 100 IOPS, and **not encrypted**; the gp3 class encrypts at rest, so the move also fixes that. The `gp3` StorageClass (`gitops/k8s/storage/gp3.yml`, encrypted, the default for new volumes) was tested on this cluster: the volume came up as gp3, encrypted, 3000 IOPS.
+
+**Why it needs downtime:** a StatefulSet's `volumeClaimTemplates` can't change in place, and the data has to move to a new volume. Plan for about 5–10 minutes of shop downtime. Run this from a machine with `kubectl` and AWS access.
+
+**1. Pause Argo CD** so it doesn't recreate the StatefulSet halfway through:
+
+```bash
+kubectl patch application boutique -n argocd --type merge -p '{"spec":{"syncPolicy":{"automated":null}}}'
+```
+
+**2. Back up twice**: an EBS snapshot and a logical dump.
+
+```bash
+PV=$(kubectl get pvc postgres-data-boutique-postgres-0 -n boutique -o jsonpath='{.spec.volumeName}')
+VOL=$(kubectl get pv $PV -o jsonpath='{.spec.awsElasticBlockStore.volumeID}{.spec.csi.volumeHandle}' | sed 's|.*/||')
+aws ec2 create-snapshot --volume-id $VOL --description "boutique postgres before gp3 move"
+kubectl exec -n boutique boutique-postgres-0 -- pg_dumpall -U postgres > boutique-$(date +%F).sql
+grep -c "CREATE TABLE" boutique-$(date +%F).sql     # expect > 0
+```
+
+**3. Keep the old volume.** gp2's reclaim policy is `Delete`, so without this, deleting the claim destroys the data:
+
+```bash
+kubectl patch pv $PV -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+```
+
+**4. Remove the old StatefulSet and claim** (the outage starts here):
+
+```bash
+kubectl delete statefulset boutique-postgres -n boutique
+kubectl delete pvc postgres-data-boutique-postgres-0 -n boutique
+```
+
+**5. Switch to gp3 in git:** in `gitops/k8s/database/statefulset.yml` set `storageClassName: gp3` and remove the "Still gp2" comment, then merge to `project-demo`. Resume Argo CD:
+
+```bash
+kubectl patch application boutique -n argocd --type merge -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}'
+kubectl get pvc -n boutique -w      # new claim, STORAGECLASS gp3, Bound
+```
+
+Postgres starts empty on the new volume, with the current password from `boutique-secrets`.
+
+**6. Restore the dump:**
+
+```bash
+kubectl wait -n boutique --for=condition=Ready pod/boutique-postgres-0 --timeout=180s
+kubectl exec -i -n boutique boutique-postgres-0 -- psql -U postgres < boutique-$(date +%F).sql
+```
+
+`role "postgres" already exists` errors are expected; the rest should succeed.
+
+**7. Check:**
+
+```bash
+kubectl exec -n boutique boutique-postgres-0 -- psql -U postgres -lqt | cut -d'|' -f1   # auth_db, boutique_db, orders_db, products_db, users_db
+kubectl port-forward -n boutique svc/gateway 3001:3001 & curl -s -o /dev/null -w '%{http_code}\n' localhost:3001/api/products   # 200
+aws ec2 describe-volumes --volume-ids $(kubectl get pv $(kubectl get pvc postgres-data-boutique-postgres-0 -n boutique -o jsonpath='{.spec.volumeName}') -o jsonpath='{.spec.csi.volumeHandle}') --query 'Volumes[0].VolumeType'   # "gp3"
+```
+
+Log in and place a test order in the shop.
+
+**8. Clean up after a few days:** delete the retained gp2 PV (`kubectl delete pv $PV`) and its EBS volume (`aws ec2 delete-volume --volume-id $VOL`). Keep the snapshot for a while.
+
+**Rollback** (before step 8): pause Argo CD, delete the new StatefulSet and claim, revert `storageClassName` to `gp2` in git, then bind a claim to the old volume by clearing its old binding (`kubectl patch pv $PV --type json -p '[{"op":"remove","path":"/spec/claimRef"}]'`) and creating `postgres-data-boutique-postgres-0` with `volumeName: $PV` before resuming Argo CD. If the volume is gone, restore from the snapshot or the dump.
+

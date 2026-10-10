@@ -46,6 +46,8 @@ spec:
       spec:
         accessModes:
           - ReadWriteOnce
+        # Still gp2: volumeClaimTemplates can't change in place. See TROUBLESHOOTING.md,
+        # "Move Postgres from gp2 to gp3", before switching this to gp3.
         storageClassName: gp2
         resources:
           requests:

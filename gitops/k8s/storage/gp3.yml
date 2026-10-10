@@ -1,0 +1,17 @@
+# Default StorageClass for new volumes: encrypted gp3 through the EBS CSI
+# driver (installed by Terraform). Postgres still uses gp2 until it is
+# migrated (TROUBLESHOOTING.md, "Move Postgres from gp2 to gp3"); its gp2 volume
+# is unencrypted, so the move also adds encryption at rest.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
